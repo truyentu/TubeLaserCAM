@@ -25,6 +25,11 @@
             <Separator/>
             <Label Content="Edges:" VerticalAlignment="Center"/>
             <Label Content="{Binding EdgeList.Count}" VerticalAlignment="Center" FontWeight="Bold"/>
+            <Separator Margin="0,10"/>
+            <CheckBox Content="Show Axis" IsChecked="{Binding ShowAxis}" Margin="0,5"/>
+            <CheckBox Content="Solid Mode (Show Cuts)" 
+          IsChecked="{Binding ShowSolidMode, Mode=TwoWay}" 
+          Margin="0,5"/>
         </ToolBar>
 
         <!-- Main Content -->

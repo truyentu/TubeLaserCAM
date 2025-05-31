@@ -112,9 +112,9 @@ struct EdgeFilterCriteria {
 
 struct ToolpathCandidate {
     std::vector<int> edgeIds;
-    double priority;
+    double priority = 0.0; 
     std::string type;
-    double totalLength;
+    double totalLength = 0.0;
 };
 struct EdgeGroup {
     std::vector<int> edgeIds;

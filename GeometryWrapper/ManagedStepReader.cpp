@@ -132,6 +132,10 @@ ManagedCylinderInfo ManagedStepReader::DetectCylinder() {
     if (m_pNativeReader == nullptr) return managedInfo;
 
     GeometryKernel::CylinderInfo nativeInfo = m_pNativeReader->DetectCylinder();
+
+    // Debug
+    System::Diagnostics::Debug::WriteLine("Native: R={0}, L={1}", nativeInfo.radius, nativeInfo.length);
+
     managedInfo.IsValid = nativeInfo.isValid;
     managedInfo.Radius = nativeInfo.radius;
     managedInfo.Length = nativeInfo.length;
@@ -141,6 +145,10 @@ ManagedCylinderInfo ManagedStepReader::DetectCylinder() {
     managedInfo.CenterX = nativeInfo.centerX;
     managedInfo.CenterY = nativeInfo.centerY;
     managedInfo.CenterZ = nativeInfo.centerZ;
+
+    // Debug
+    System::Diagnostics::Debug::WriteLine("Managed: R={0}, L={1}", managedInfo.Radius, managedInfo.Length);
+
     return managedInfo;
 }
 

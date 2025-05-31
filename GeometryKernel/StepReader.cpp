@@ -345,7 +345,6 @@ namespace GeometryKernel {
     }
 
     CylinderInfo StepReader::DetectCylinder() const {
-
         CylinderInfo info;
         if (!m_shape || m_shape->IsNull()) return info;
 
@@ -1081,10 +1080,32 @@ namespace GeometryKernel {
         std::vector<ToolpathCandidate> candidates;
 
         EdgeFilterCriteria criteria;
+        criteria.minLength = 0.5; // Giảm ngưỡng để không bỏ sót circles nhỏ
         auto filteredEdges = FilterPotentialEdges(criteria);
-        auto closedLoops = DetectClosedLoops();
+        auto classifications = ClassifyEdges();
 
-        // Process closed loops
+        // Tạo một candidate chứa TẤT CẢ edges trên surface
+        ToolpathCandidate allSurfaceEdges;
+        allSurfaceEdges.type = "all_surface_features";
+        allSurfaceEdges.priority = 2.0;
+        allSurfaceEdges.totalLength = 0;
+
+        // Thu thập tất cả edges không phải INTERNAL
+        for (const auto& edge : m_edges) {
+            auto classIt = classifications.find(edge.id);
+            if (classIt != classifications.end() &&
+                classIt->second.location != EdgeClassification::INTERNAL) {
+                allSurfaceEdges.edgeIds.push_back(edge.id);
+                allSurfaceEdges.totalLength += edge.length;
+            }
+        }
+
+        if (!allSurfaceEdges.edgeIds.empty()) {
+            candidates.push_back(allSurfaceEdges);
+        }
+
+        // Vẫn giữ các closed loops riêng lẻ để tham khảo
+        auto closedLoops = DetectClosedLoops();
         for (const auto& loop : closedLoops) {
             ToolpathCandidate candidate;
             candidate.edgeIds = loop;
@@ -1101,8 +1122,31 @@ namespace GeometryKernel {
                 }
             }
             candidate.totalLength = totalLength;
-
             candidates.push_back(candidate);
+        }
+
+        // Thêm các circles đơn lẻ không thuộc loop nào
+        std::set<int> usedEdges;
+        for (const auto& candidate : candidates) {
+            for (int id : candidate.edgeIds) {
+                usedEdges.insert(id);
+            }
+        }
+
+        for (const auto& edge : m_edges) {
+            if (edge.type == EdgeInfo::CIRCLE &&
+                usedEdges.find(edge.id) == usedEdges.end()) {
+                auto classIt = classifications.find(edge.id);
+                if (classIt != classifications.end() &&
+                    classIt->second.location != EdgeClassification::INTERNAL) {
+                    ToolpathCandidate circleCandidate;
+                    circleCandidate.edgeIds.push_back(edge.id);
+                    circleCandidate.type = "single_circle";
+                    circleCandidate.priority = 0.8;
+                    circleCandidate.totalLength = edge.length;
+                    candidates.push_back(circleCandidate);
+                }
+            }
         }
 
         // Sort by priority

@@ -1,5 +1,4 @@
-﻿// TubeLaserCAM.UI/Models/GeometryModel.cs
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Windows.Media;
 using System.Windows.Media.Media3D;
@@ -16,19 +15,18 @@ namespace TubeLaserCAM.UI.Models
         public double Length { get; set; }
         public Vector3D Axis { get; set; }
         public System.Windows.Media.Media3D.Point3D Center { get; set; }
-
     }
 
     public class EdgeSelectionInfo
     {
         public int EdgeId { get; set; }
-        public GeometryWrapper.ManagedEdgeInfo EdgeInfo { get; set; } // Sử dụng kiểu từ GeometryWrapper
-        public List<System.Windows.Media.Media3D.Point3D> Points { get; set; } // Sử dụng kiểu của WPF
-        public GeometryModel3D Model3D { get; set; } // System.Windows.Media.Media3D.GeometryModel3D
-        public Material OriginalMaterial { get; set; } // System.Windows.Media.Media3D.Material
+        public GeometryWrapper.ManagedEdgeInfo EdgeInfo { get; set; }
+        public List<System.Windows.Media.Media3D.Point3D> Points { get; set; }
+        public GeometryModel3D Model3D { get; set; }
+        public Material OriginalMaterial { get; set; }
         public bool IsSelected { get; set; }
         public bool IsHovered { get; set; }
-        public EdgeClassificationData Classification { get; set; } // New property
+        public EdgeClassificationData Classification { get; set; }
     }
 
     public class GeometryModel
@@ -36,14 +34,18 @@ namespace TubeLaserCAM.UI.Models
         private ManagedStepReader stepReader;
         private CylinderData cylinderInfo;
         private Dictionary<int, EdgeSelectionInfo> edgeSelectionMap;
-        private Dictionary<int, EdgeClassificationData> edgeClassifications; // New field
+        private Dictionary<int, EdgeClassificationData> edgeClassifications;
         private List<int> selectedEdgeIds;
+
+        // Thêm property cho rendering mode
+        public enum RenderMode { Wireframe, SolidWithCuts }
+        public RenderMode CurrentRenderMode { get; set; } = RenderMode.Wireframe;
 
         public GeometryModel()
         {
             stepReader = new ManagedStepReader();
             edgeSelectionMap = new Dictionary<int, EdgeSelectionInfo>();
-            edgeClassifications = new Dictionary<int, EdgeClassificationData>(); // Initialize
+            edgeClassifications = new Dictionary<int, EdgeClassificationData>();
             selectedEdgeIds = new List<int>();
         }
 
@@ -140,12 +142,254 @@ namespace TubeLaserCAM.UI.Models
             }
         }
 
+        public Model3DGroup CreateVisualization()
+        {
+            return CurrentRenderMode == RenderMode.SolidWithCuts
+                ? CreateSolidCylinderWithCuts()
+                : CreateWireframeModel();
+        }
+
+        public Model3DGroup CreateSolidCylinderWithCuts()
+        {
+            var modelGroup = new Model3DGroup();
+
+            if (cylinderInfo == null || !cylinderInfo.IsValid)
+                return CreateWireframeModel();
+
+            // Ensure edgeSelectionMap is populated
+            if (edgeSelectionMap.Count == 0)
+            {
+                CreateWireframeModel(); // This populates edgeSelectionMap
+            }
+
+            // 1. Tạo cylinder surface
+            var cylinderMesh = CreateCylinderMesh(
+                cylinderInfo.Center,
+                cylinderInfo.Axis,
+                cylinderInfo.Radius,
+                cylinderInfo.Length,
+                32
+            );
+
+            // Use EmissiveMaterial for better visibility
+            var cylinderMaterial = new DiffuseMaterial(new SolidColorBrush(Color.FromArgb(255, 200, 200, 200)));
+            modelGroup.Children.Add(new GeometryModel3D
+            {
+                Geometry = cylinderMesh,
+                Material = cylinderMaterial,
+                BackMaterial = cylinderMaterial
+            });
+
+            // 2. Tạo visual cho các lỗ cắt
+            CreateCutoutVisuals(modelGroup);
+
+            // 3. Hiển thị toolpaths dạng nét đứt
+            var toolpathGroup = CreateDashedToolpaths();
+            foreach (var child in toolpathGroup.Children)
+            {
+                modelGroup.Children.Add(child);
+            }
+
+            return modelGroup;
+        }
+
+        private MeshGeometry3D CreateCylinderMesh(System.Windows.Media.Media3D.Point3D center, Vector3D axis, double radius, double length, int segments)
+        {
+            System.Diagnostics.Debug.WriteLine($"Creating cylinder: Center={center}, Radius={radius}, Length={length}");
+            var mesh = new MeshGeometry3D();
+            axis.Normalize();
+
+            // Tạo hệ tọa độ local
+            var up = Math.Abs(axis.Y) < 0.9 ? new Vector3D(0, 1, 0) : new Vector3D(1, 0, 0);
+            var right = Vector3D.CrossProduct(axis, up);
+            right.Normalize();
+            up = Vector3D.CrossProduct(right, axis);
+
+            var start = center - axis * length / 2;
+            var end = center + axis * length / 2;
+
+            // Vertices cho 2 vòng tròn
+            for (int i = 0; i <= segments; i++)
+            {
+                double angle = 2 * Math.PI * i / segments;
+                var offset = Math.Cos(angle) * radius * right + Math.Sin(angle) * radius * up;
+
+                mesh.Positions.Add(start + offset);
+                mesh.Positions.Add(end + offset);
+            }
+
+            // Triangles cho mặt ngoài
+            for (int i = 0; i < segments; i++)
+            {
+                int i0 = i * 2;
+                int i1 = i * 2 + 1;
+                int i2 = ((i + 1) % segments) * 2;
+                int i3 = ((i + 1) % segments) * 2 + 1;
+
+                mesh.TriangleIndices.Add(i0);
+                mesh.TriangleIndices.Add(i2);
+                mesh.TriangleIndices.Add(i1);
+
+                mesh.TriangleIndices.Add(i2);
+                mesh.TriangleIndices.Add(i3);
+                mesh.TriangleIndices.Add(i1);
+            }
+
+            return mesh;
+        }
+
+        private Model3DGroup CreateDashedToolpaths()
+        {
+            var group = new Model3DGroup();
+            var dashMaterial = new DiffuseMaterial(new SolidColorBrush(Colors.DarkGreen));
+
+            foreach (var kvp in edgeSelectionMap)
+            {
+                if (kvp.Value.IsSelected && kvp.Value.Points.Count >= 2)
+                {
+                    // Tạo dashed line bằng cách chia nhỏ thành segments
+                    for (int i = 0; i < kvp.Value.Points.Count - 1; i += 2)
+                    {
+                        if (i + 1 < kvp.Value.Points.Count)
+                        {
+                            var dash = CreateCylinderBetweenPoints(
+                                kvp.Value.Points[i],
+                                kvp.Value.Points[i + 1],
+                                0.3 // Thinner for dashed effect
+                            );
+
+                            group.Children.Add(new GeometryModel3D
+                            {
+                                Geometry = dash,
+                                Material = dashMaterial
+                            });
+                        }
+                    }
+                }
+            }
+
+            return group;
+        }
+
+        private void CreateCutoutVisuals(Model3DGroup group)
+        {
+            var cutMaterial = new DiffuseMaterial(new SolidColorBrush(Color.FromArgb(255, 50, 50, 50)));
+
+            foreach (var kvp in edgeSelectionMap)
+            {
+                if (!kvp.Value.IsSelected) continue;
+
+                var edgeInfo = kvp.Value;
+
+                // Tạo visual cho cuts dựa trên loại edge
+                if (edgeInfo.EdgeInfo.Type == ManagedEdgeInfo.EdgeType.Circle)
+                {
+                    // Tạo lỗ tròn
+                    var cutMesh = CreateHoleCutout(edgeInfo.Points);
+                    if (cutMesh != null)
+                    {
+                        group.Children.Add(new GeometryModel3D
+                        {
+                            Geometry = cutMesh,
+                            Material = cutMaterial
+                        });
+                    }
+                }
+                else
+                {
+                    // Tạo rãnh cho các loại edge khác
+                    var cutMesh = CreateSlotCutout(edgeInfo.Points, 2.0); // 2mm width
+                    if (cutMesh != null)
+                    {
+                        group.Children.Add(new GeometryModel3D
+                        {
+                            Geometry = cutMesh,
+                            Material = cutMaterial
+                        });
+                    }
+                }
+            }
+        }
+
+        private MeshGeometry3D CreateHoleCutout(List<System.Windows.Media.Media3D.Point3D> circlePoints)
+        {
+            if (circlePoints.Count < 3) return null;
+
+            var mesh = new MeshGeometry3D();
+
+            // Tính center và radius
+            var center = new System.Windows.Media.Media3D.Point3D(
+                circlePoints.Average(p => p.X),
+                circlePoints.Average(p => p.Y),
+                circlePoints.Average(p => p.Z)
+            );
+
+            var radius = circlePoints[0].DistanceTo(center);
+
+            // Tạo disc mesh
+            mesh.Positions.Add(center);
+
+            for (int i = 0; i < circlePoints.Count; i++)
+            {
+                mesh.Positions.Add(circlePoints[i]);
+
+                if (i > 0)
+                {
+                    mesh.TriangleIndices.Add(0);
+                    mesh.TriangleIndices.Add(i);
+                    mesh.TriangleIndices.Add(i + 1 < circlePoints.Count ? i + 1 : 1);
+                }
+            }
+
+            return mesh;
+        }
+
+        private MeshGeometry3D CreateSlotCutout(List<System.Windows.Media.Media3D.Point3D> points, double width)
+        {
+            if (points.Count < 2) return null;
+
+            var mesh = new MeshGeometry3D();
+
+            // Tạo ribbon mesh dọc theo path
+            for (int i = 0; i < points.Count - 1; i++)
+            {
+                var p1 = points[i];
+                var p2 = points[i + 1];
+                var dir = p2 - p1;
+                dir.Normalize();
+
+                // Perpendicular vector
+                var perp = Vector3D.CrossProduct(dir, cylinderInfo.Axis);
+                if (perp.Length < 0.001)
+                    perp = Vector3D.CrossProduct(dir, new Vector3D(1, 0, 0));
+                perp.Normalize();
+                perp *= width / 2;
+
+                // Add quad vertices
+                int baseIndex = mesh.Positions.Count;
+                mesh.Positions.Add(p1 + perp);
+                mesh.Positions.Add(p1 - perp);
+                mesh.Positions.Add(p2 + perp);
+                mesh.Positions.Add(p2 - perp);
+
+                // Add triangles
+                mesh.TriangleIndices.Add(baseIndex);
+                mesh.TriangleIndices.Add(baseIndex + 2);
+                mesh.TriangleIndices.Add(baseIndex + 1);
+
+                mesh.TriangleIndices.Add(baseIndex + 1);
+                mesh.TriangleIndices.Add(baseIndex + 2);
+                mesh.TriangleIndices.Add(baseIndex + 3);
+            }
+
+            return mesh;
+        }
 
         public Model3DGroup CreateWireframeModel()
         {
             var modelGroup = new Model3DGroup();
             edgeSelectionMap.Clear();
-            
+
 
             if (this.cylinderInfo == null) GetCylinderInfo(); // Ensure cylinderInfo is populated
 
@@ -231,7 +475,7 @@ namespace TubeLaserCAM.UI.Models
                         edgeGroup.Children.Add(segmentGeometryModel); // Thêm segment vào group của cạnh hiện tại
                     }
                 }
-                
+
 
                 var edgeModel = new GeometryModel3D
                 {
@@ -305,8 +549,12 @@ namespace TubeLaserCAM.UI.Models
 
             return mesh;
         }
+
         public CylinderData GetCylinderInfo()
         {
+            // Force edge classification first
+            FetchAndStoreEdgeClassifications();
+
             var info = stepReader.DetectCylinder();
             cylinderInfo = new CylinderData
             {
@@ -316,8 +564,12 @@ namespace TubeLaserCAM.UI.Models
                 Axis = new Vector3D(info.AxisX, info.AxisY, info.AxisZ),
                 Center = new System.Windows.Media.Media3D.Point3D(info.CenterX, info.CenterY, info.CenterZ)
             };
+
+            System.Diagnostics.Debug.WriteLine($"CylinderInfo: R={info.Radius}, L={info.Length}");
+
             return cylinderInfo;
         }
+
         public Model3DGroup CreateAxisVisualization()
         {
             var group = new Model3DGroup();
@@ -393,6 +645,7 @@ namespace TubeLaserCAM.UI.Models
 
             return mesh;
         }
+
         private MeshGeometry3D CreateMeshFromGroup(Model3DGroup group)
         {
             var combinedMesh = new MeshGeometry3D();
@@ -421,6 +674,7 @@ namespace TubeLaserCAM.UI.Models
 
             return combinedMesh;
         }
+
         public void SetEdgeHovered(int edgeId, bool isHovered)
         {
             if (edgeSelectionMap.ContainsKey(edgeId))
@@ -478,6 +732,7 @@ namespace TubeLaserCAM.UI.Models
         {
             return edgeSelectionMap.ContainsKey(edgeId) ? edgeSelectionMap[edgeId] : null;
         }
+
         public int? FindNearestEdge(System.Windows.Media.Media3D.Point3D rayOrigin, Vector3D rayDirection)
         {
             double minDistance = double.MaxValue;
@@ -509,10 +764,12 @@ namespace TubeLaserCAM.UI.Models
 
             return nearestEdgeId;
         }
+
         public Dictionary<int, EdgeSelectionInfo> GetAllEdgeInfos()
         {
             return new Dictionary<int, EdgeSelectionInfo>(edgeSelectionMap);
         }
+
         public List<ToolpathSuggestion> GetToolpathSuggestions()
         {
             var suggestions = new List<ToolpathSuggestion>();
@@ -548,6 +805,7 @@ namespace TubeLaserCAM.UI.Models
             }
             return result;
         }
+
         public class ToolpathSuggestion
         {
             public List<int> EdgeIds { get; set; }
@@ -555,6 +813,7 @@ namespace TubeLaserCAM.UI.Models
             public double Priority { get; set; }
             public double TotalLength { get; set; }
         }
+
         // Thêm class để nhận diện pattern
         public class ShapeRecognition
         {
@@ -764,6 +1023,5 @@ namespace TubeLaserCAM.UI.Models
                 );
             }
         }
-
     }
 }

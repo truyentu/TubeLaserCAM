@@ -60,6 +60,7 @@ namespace TubeLaserCAM.UI.ViewModels
         private GeometryModel geometryModel;
         private Model3DGroup wireframeModel;
         private string statusText;
+        private bool showSolidMode = false;
         private ObservableCollection<EdgeInfoWrapper> edgeList;
         private CylinderData cylinderInfo;
         private bool showAxis = true;
@@ -225,6 +226,7 @@ namespace TubeLaserCAM.UI.ViewModels
                                 EdgeList.Add(wrapper);
                             }
                         }
+                        UpdateVisualization();
                     }
                     else
                     {
@@ -238,9 +240,21 @@ namespace TubeLaserCAM.UI.ViewModels
             }
         }
 
-        private void UpdateAxisVisibility()
+        private void UpdateVisualization()
         {
-            // Logic to show/hide axis (to be implemented)
+            if (geometryModel != null)
+            {
+                geometryModel.CurrentRenderMode = showSolidMode
+                    ? GeometryModel.RenderMode.SolidWithCuts
+                    : GeometryModel.RenderMode.Wireframe;
+
+                // Force refresh
+                WireframeModel = null;
+                OnPropertyChanged(nameof(WireframeModel));
+
+                WireframeModel = geometryModel.CreateVisualization();
+                OnPropertyChanged(nameof(WireframeModel));
+            }
         }
 
         public event PropertyChangedEventHandler PropertyChanged;
@@ -266,7 +280,16 @@ namespace TubeLaserCAM.UI.ViewModels
             {
                 showAxis = value;
                 OnPropertyChanged();
-                UpdateAxisVisibility();
+            }
+        }
+        public bool ShowSolidMode
+        {
+            get => showSolidMode;
+            set
+            {
+                showSolidMode = value;
+                OnPropertyChanged();
+                UpdateVisualization();
             }
         }
 
@@ -972,13 +995,37 @@ namespace TubeLaserCAM.UI.ViewModels
         {
             var suggestions = geometryModel.GetToolpathSuggestions();
 
-            SuggestedToolpaths.Clear();
-            foreach (var suggestion in suggestions)
-            {
-                SuggestedToolpaths.Add(suggestion);
-            }
+            // Xóa selection cũ
+            ExecuteClearSelection(null);
 
-            StatusText = $"Found {suggestions.Count} toolpath suggestions.";
+            // Tìm suggestion "all_surface_features" và chọn tất cả edges trong đó
+            var allSurfaceFeatures = suggestions.FirstOrDefault(s => s.Type == "all_surface_features");
+            if (allSurfaceFeatures != null)
+            {
+                foreach (int edgeId in allSurfaceFeatures.EdgeIds)
+                {
+                    var edgeInfo = geometryModel.GetEdgeInfo(edgeId);
+                    if (edgeInfo != null)
+                    {
+                        geometryModel.SetEdgeSelected(edgeId, true);
+                        SelectedToolpaths.Add(edgeInfo);
+                    }
+                }
+                StatusText = $"Auto-selected {allSurfaceFeatures.EdgeIds.Count} surface features.";
+
+                // Chuyển sang Multiple Selection mode để có thể click bỏ từng edge
+                CurrentSelectionMode = SelectionMode.Multiple;
+            }
+            else
+            {
+                // Fallback: hiển thị suggestions như cũ
+                SuggestedToolpaths.Clear();
+                foreach (var suggestion in suggestions)
+                {
+                    SuggestedToolpaths.Add(suggestion);
+                }
+                StatusText = $"Found {suggestions.Count} toolpath suggestions.";
+            }
         }
 
         private void ExecuteAcceptSuggestion(object parameter)
