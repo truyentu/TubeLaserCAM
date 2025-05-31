@@ -1,0 +1,314 @@
+﻿<Window x:Class="TubeLaserCAM.UI.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:helix="http://helix-toolkit.org/wpf"
+        xmlns:i="http://schemas.microsoft.com/xaml/behaviors"
+        mc:Ignorable="d"
+        Title="Tube Laser CAM" Height="800" Width="1200">
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Toolbar -->
+        <ToolBar Grid.Row="0" Height="40">
+            <Button Command="{Binding LoadFileCommand}" Padding="10,5">
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock Text="Load STEP File" VerticalAlignment="Center"/>
+                </StackPanel>
+            </Button>
+            <Separator/>
+            <Label Content="Edges:" VerticalAlignment="Center"/>
+            <Label Content="{Binding EdgeList.Count}" VerticalAlignment="Center" FontWeight="Bold"/>
+        </ToolBar>
+
+        <!-- Main Content -->
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="280" MinWidth="250"/>
+                <ColumnDefinition Width="5"/>
+                <ColumnDefinition Width="3*"/>
+                <ColumnDefinition Width="5"/>
+                <ColumnDefinition Width="300" MinWidth="250"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- Left Panel - Cylinder Info & Controls -->
+            <ScrollViewer Grid.Column="0" VerticalScrollBarVisibility="Auto">
+                <StackPanel Background="WhiteSmoke">
+                    <!-- Cylinder Information -->
+                    <Border Background="DarkGray" Padding="5">
+                        <TextBlock Text="Cylinder Information" FontWeight="Bold" Foreground="White"/>
+                    </Border>
+
+                    <StackPanel Margin="10" 
+                                Visibility="{Binding CylinderInfo.IsValid, 
+                                            Converter={StaticResource BoolToVisibilityConverter},
+                                            FallbackValue=Collapsed}">
+                        <TextBlock Text="Cylinder Parameters:" FontWeight="Bold" Margin="0,0,0,5"/>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+
+                            <TextBlock Grid.Row="0" Grid.Column="0" Text="Radius:" Margin="0,2"/>
+                            <TextBlock Grid.Row="0" Grid.Column="1"
+                                       Text="{Binding CylinderInfo.Radius, StringFormat='{}{0:F2} mm'}"
+                                       Margin="5,2"/>
+
+                            <TextBlock Grid.Row="1" Grid.Column="0" Text="Length:" Margin="0,2"/>
+                            <TextBlock Grid.Row="1" Grid.Column="1"
+                                       Text="{Binding CylinderInfo.Length, StringFormat='{}{0:F2} mm'}"
+                                       Margin="5,2"/>
+
+                            <TextBlock Grid.Row="2" Grid.Column="0" Text="Axis:" Margin="0,2"/>
+                            <TextBlock Grid.Row="2" Grid.Column="1" Margin="5,2">
+                                <TextBlock.Text>
+                                    <MultiBinding StringFormat="({0:F3}, {1:F3}, {2:F3})">
+                                        <Binding Path="CylinderInfo.Axis.X"/>
+                                        <Binding Path="CylinderInfo.Axis.Y"/>
+                                        <Binding Path="CylinderInfo.Axis.Z"/>
+                                    </MultiBinding>
+                                </TextBlock.Text>
+                            </TextBlock>
+                        </Grid>
+
+                        <Separator Margin="0,10"/>
+                        <CheckBox Content="Show Axis" IsChecked="{Binding ShowAxis}" Margin="0,5"/>
+                    </StackPanel>
+
+                    <!-- Selection Mode -->
+                    <Border Background="LightGray" Padding="5" Margin="0,10,0,0">
+                        <TextBlock Text="Selection Mode" FontWeight="Bold"/>
+                    </Border>
+                    <StackPanel Margin="10">
+                        <RadioButton Content="Single Edge" Margin="5,2"
+                                     IsChecked="{Binding Path=CurrentSelectionMode, 
+                                                Converter={StaticResource EnumBooleanConverter}, 
+                                                ConverterParameter=Single}"/>
+                        <RadioButton Content="Multiple Edges" Margin="5,2"
+                                     IsChecked="{Binding Path=CurrentSelectionMode, 
+                                                Converter={StaticResource EnumBooleanConverter}, 
+                                                ConverterParameter=Multiple}"/>
+                        <RadioButton Content="Chain Selection" Margin="5,2"
+                                     IsChecked="{Binding Path=CurrentSelectionMode, 
+                                                Converter={StaticResource EnumBooleanConverter}, 
+                                                ConverterParameter=Chain}"/>
+                        <Button Content="Clear Selection"
+                                Command="{Binding ClearSelectionCommand}"
+                                Margin="5,10,5,5" Padding="10,5"/>
+                    </StackPanel>
+
+                    <!-- Edge Filters -->
+                    <Expander Header="Edge Filters" Margin="5">
+                        <StackPanel Margin="10">
+                            <TextBlock Text="Filter by Type:" FontWeight="Bold" Margin="0,0,0,5"/>
+                            <ComboBox x:Name="cmbEdgeType" Margin="0,0,0,10">
+                                <ComboBoxItem Content="All Types" IsSelected="True"/>
+                                <ComboBoxItem Content="Line"/>
+                                <ComboBoxItem Content="Circle"/>
+                                <ComboBoxItem Content="BSpline"/>
+                                <ComboBoxItem Content="Bezier"/>
+                                <ComboBoxItem Content="Other"/>
+                            </ComboBox>
+
+                            <TextBlock Text="Filter by Length (mm):" FontWeight="Bold" Margin="0,0,0,5"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+
+                                <TextBlock Grid.Column="0" Text="Min:" VerticalAlignment="Center"/>
+                                <TextBox Grid.Column="1" x:Name="txtMinLength" Margin="5,0"/>
+                                <TextBlock Grid.Column="2" Text="Max:" VerticalAlignment="Center" Margin="10,0,0,0"/>
+                                <TextBox Grid.Column="3" x:Name="txtMaxLength" Margin="5,0"/>
+                            </Grid>
+
+                            <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                                <Button Content="Apply Filter" Margin="0,0,5,0" Padding="10,5"/>
+                                <Button Content="Clear Filter" Padding="10,5"/>
+                            </StackPanel>
+
+                            <TextBlock Text="{Binding EdgeList.Count, StringFormat='Showing {0} edges'}" 
+                                       Margin="0,10,0,0" FontStyle="Italic"/>
+                        </StackPanel>
+                    </Expander>
+
+                    <!-- Selected Toolpaths -->
+                    <Border Background="LightGray" Padding="5" Margin="0,10,0,0">
+                        <TextBlock Text="Selected Toolpaths" FontWeight="Bold"/>
+                    </Border>
+                    <Border BorderBrush="Gray" BorderThickness="1" Margin="5" MinHeight="150">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+
+                            <!-- Toolbar -->
+                            <ToolBar Grid.Row="0" Height="30">
+                                <Button Content="Save" Command="{Binding SaveConfigurationCommand}" Padding="5,2"/>
+                                <Button Content="Load" Command="{Binding LoadConfigurationCommand}" Padding="5,2"/>
+                            </ToolBar>
+
+                            <!-- List -->
+                            <ListBox Grid.Row="1" 
+                                     ItemsSource="{Binding SelectedToolpaths}"
+                                     ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                     Background="White">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border BorderBrush="LightGray" BorderThickness="1"
+                                                Margin="2" Padding="5" CornerRadius="3"
+                                                Background="LightGreen">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+
+                                                <!-- Move buttons -->
+                                                <StackPanel Grid.Column="0" Orientation="Vertical" Margin="0,0,5,0">
+                                                    <Button Content="▲" Width="20" Height="20"
+                                                            Command="{Binding DataContext.MoveToolpathUpCommand,
+                                                                    RelativeSource={RelativeSource AncestorType=Window}}"
+                                                            CommandParameter="{Binding}"/>
+                                                    <Button Content="▼" Width="20" Height="20"
+                                                            Command="{Binding DataContext.MoveToolpathDownCommand,
+                                                                    RelativeSource={RelativeSource AncestorType=Window}}"
+                                                            CommandParameter="{Binding}"/>
+                                                </StackPanel>
+
+                                                <!-- Info -->
+                                                <StackPanel Grid.Column="1">
+                                                    <TextBlock Text="{Binding EdgeInfo.Id, StringFormat='Edge #{0}'}"
+                                                               FontWeight="Bold"/>
+                                                    <TextBlock Text="{Binding EdgeInfo.Type}" FontSize="10"/>
+                                                    <TextBlock Text="{Binding EdgeInfo.Length, StringFormat='L: {0:F2}mm'}"
+                                                               FontSize="10"/>
+                                                </StackPanel>
+
+                                                <!-- Delete -->
+                                                <Button Grid.Column="2" Content="X" Width="20" Height="20"
+                                                        Command="{Binding DataContext.DeleteSelectedCommand,
+                                                                RelativeSource={RelativeSource AncestorType=Window}}"
+                                                        CommandParameter="{Binding}"/>
+                                            </Grid>
+                                        </Border>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+
+                            <!-- Count -->
+                            <TextBlock Grid.Row="2" 
+                                       Text="{Binding SelectedToolpaths.Count, StringFormat='{}{0} edges selected'}"
+                                       Margin="5" FontStyle="Italic" Background="WhiteSmoke" Padding="2"/>
+                        </Grid>
+                    </Border>
+                </StackPanel>
+            </ScrollViewer>
+
+            <!-- Splitter -->
+            <GridSplitter Grid.Column="1" HorizontalAlignment="Stretch" Background="Gray"/>
+
+            <!-- 3D Viewport -->
+            <helix:HelixViewport3D Grid.Column="2"
+                                   ShowCoordinateSystem="True"
+                                   ShowViewCube="True"
+                                   Background="LightGray"
+                                   x:Name="viewport3D">
+
+                <!-- Mouse interaction -->
+                <i:Interaction.Triggers>
+                    <i:EventTrigger EventName="MouseMove">
+                        <i:InvokeCommandAction Command="{Binding MouseMoveCommand}"
+                                               PassEventArgsToCommand="True"/>
+                    </i:EventTrigger>
+                    <i:EventTrigger EventName="MouseDown">
+                        <i:InvokeCommandAction Command="{Binding MouseDownCommand}"
+                                               PassEventArgsToCommand="True"/>
+                    </i:EventTrigger>
+                </i:Interaction.Triggers>
+
+                <helix:HelixViewport3D.DefaultCamera>
+                    <PerspectiveCamera Position="100,100,100"
+                                       LookDirection="-1,-1,-1"
+                                       UpDirection="0,0,1"
+                                       FieldOfView="45"/>
+                </helix:HelixViewport3D.DefaultCamera>
+
+                <!-- Lights -->
+                <ModelVisual3D>
+                    <ModelVisual3D.Content>
+                        <Model3DGroup>
+                            <AmbientLight Color="Gray"/>
+                            <DirectionalLight Color="White" Direction="-1,-1,-3"/>
+                            <DirectionalLight Color="White" Direction="1,1,3"/>
+                        </Model3DGroup>
+                    </ModelVisual3D.Content>
+                </ModelVisual3D>
+
+                <!-- Models -->
+                <ModelVisual3D Content="{Binding WireframeModel}"/>
+                <ModelVisual3D Content="{Binding AxisModel}"
+                               Visibility="{Binding ShowAxis, 
+                                          Converter={StaticResource BoolToVisibilityConverter}}"/>
+
+                <!-- Grid -->
+                <helix:GridLinesVisual3D Width="200" Length="200" 
+                                         MinorDistance="10" MajorDistance="50" 
+                                         Thickness="0.1"/>
+            </helix:HelixViewport3D>
+
+            <!-- Splitter -->
+            <GridSplitter Grid.Column="3" HorizontalAlignment="Stretch" Background="Gray"/>
+
+            <!-- Edge List -->
+            <Grid Grid.Column="4">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+
+                <Border Grid.Row="0" Background="DarkGray" Padding="5">
+                    <TextBlock Text="Edge List" FontWeight="Bold" Foreground="White"/>
+                </Border>
+
+                <DataGrid Grid.Row="1" 
+                          ItemsSource="{Binding EdgeList}"
+                          AutoGenerateColumns="False"
+                          CanUserAddRows="False"
+                          SelectionMode="Extended"
+                          IsReadOnly="True">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="ID" Binding="{Binding Id}" Width="50"/>
+                        <DataGridTextColumn Header="Type" Binding="{Binding Type}" Width="80"/>
+                        <DataGridTextColumn Header="Length" Binding="{Binding Length, StringFormat=F2}" Width="*"/>
+                    </DataGrid.Columns>
+                </DataGrid>
+            </Grid>
+        </Grid>
+
+        <!-- Status Bar -->
+        <StatusBar Grid.Row="2">
+            <StatusBarItem>
+                <TextBlock Text="{Binding StatusText}"/>
+            </StatusBarItem>
+        </StatusBar>
+    </Grid>
+</Window>
