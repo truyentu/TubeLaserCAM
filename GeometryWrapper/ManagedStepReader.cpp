@@ -209,3 +209,18 @@ List<ManagedToolpathCandidate>^ ManagedStepReader::GetToolpathCandidates() {
 
     return managedCandidates;
 }
+List<List<int>^>^ ManagedStepReader::GetEdgeGroups() {
+    if (m_pNativeReader == nullptr) return nullptr;
+    auto groups = m_pNativeReader->GroupConnectedEdges();
+    auto managedGroups = gcnew List<List<int>^>();
+
+    for (const auto& group : groups) {
+        auto managedGroup = gcnew List<int>();
+        for (int id : group.edgeIds) {
+            managedGroup->Add(id);
+        }
+        managedGroups->Add(managedGroup);
+    }
+
+    return managedGroups;
+}

@@ -59,5 +59,13 @@ namespace GeometryKernel {
         std::vector<int> FilterPotentialEdges(const EdgeFilterCriteria& criteria) const;
         std::vector<std::vector<int>> DetectClosedLoops() const;
         std::vector<ToolpathCandidate> GenerateToolpathCandidates() const;
+        std::vector<int> DetectCollinearBSplines() const;
+        std::vector<EdgeGroup> GroupConnectedEdges(double tolerance = 0.1) const;
+        bool AreEdgesTangent(int edge1Id, int edge2Id, double angleTolerance = 5.0) const;
+        bool EdgesConnected(int edge1Id, int edge2Id, double tolerance = 0.1) const;
+        bool IsClosedLoop(const std::vector<int>& edgeIds) const;
+        bool HasOnlyCircles(const std::vector<int>& edgeIds) const;
+        bool HasRectanglePattern(const std::vector<int>& edgeIds) const;
+        bool AreEdgesPerpendicular(int edge1Id, int edge2Id, double angleTolerance = 15.0) const;
     };
 }

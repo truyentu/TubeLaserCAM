@@ -430,24 +430,38 @@ namespace TubeLaserCAM.UI.ViewModels
             SelectedToolpaths.Clear();
             processedInChain.Clear(); // Clear for new chain operation
 
-            List<int> edgesToSelect = new List<int>();
-            const double tangentAngleTolerance = 15.0; // Used for open curves
-
-            if (startEdge == null || startEdge.Classification == null) // Safety check
+            try
             {
-                if (startEdge != null) edgesToSelect.Add(startEdgeId); // Select clicked edge if info is partially available
-                // Add selected edges to the toolpath list
-                foreach (var edgeId_toSelect in edgesToSelect.Distinct())
+                var edgeGroups = geometryModel.GetEdgeGroups();
+                System.Diagnostics.Debug.WriteLine($"Found {edgeGroups.Count} edge groups");
+
+                foreach (var group in edgeGroups)
                 {
-                    var edgeInfoToSelect = geometryModel.GetEdgeInfo(edgeId_toSelect);
-                    if (edgeInfoToSelect != null)
+                    if (group.Contains(startEdgeId))
                     {
-                        geometryModel.SetEdgeSelected(edgeId_toSelect, true);
-                        SelectedToolpaths.Add(edgeInfoToSelect);
+                        System.Diagnostics.Debug.WriteLine($"Found group containing edge {startEdgeId}");
+
+                        foreach (var id in group)
+                        {
+                            var info = geometryModel.GetEdgeInfo(id);
+                            if (info != null)
+                            {
+                                geometryModel.SetEdgeSelected(id, true);
+                                SelectedToolpaths.Add(info);
+                            }
+                        }
+                        return;
                     }
                 }
-                return;
             }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error in GetEdgeGroups: {ex.Message}");
+            }
+
+            List<int> edgesToSelect = new List<int>();
+            const double tangentAngleTolerance = 175.0;
+            
 
             // Prioritize selection based on C++ classification
             if (startEdge.EdgeInfo.Type == GeometryWrapper.ManagedEdgeInfo.EdgeType.Line)
@@ -487,20 +501,15 @@ namespace TubeLaserCAM.UI.ViewModels
                 }
                 else
                 {
-                    // Fallback: if the clicked line itself is on surface, select it.
-                    // Or, if no loops are fully on surface, but the clicked line is, select it.
-                    // This part can be expanded to find tangent chains of lines on surface if no closed loop is found.
+
                     if (startEdge.Classification.Location == Models.EdgeLocation.OnCylinderSurface)
                     {
                         edgesToSelect.Add(startEdgeId);
                     }
-                    // If still nothing, and the old logic found something, maybe use that as a last resort?
-                    // For now, if no surface loop and clicked line not on surface, select nothing from lines.
-                    // Or, select just the clicked line if it's on the surface.
+
                     else if (!edgesToSelect.Any()) // If nothing selected yet
                     {
-                         // Last resort: if the original IsLoopApproximatelyOnCylinderSurface found something, use it.
-                         // This is to bridge the gap if C++ classification is too strict initially.
+
                         var legacyLoops = FindAllClosedLineLoops(startEdgeId)
                                           .Where(loop => IsLoopApproximatelyOnCylinderSurface(loop, CylinderInfo, 1.0))
                                           .OrderByDescending(loop => CalculateLoopTotalLength(loop))

@@ -116,3 +116,10 @@ struct ToolpathCandidate {
     std::string type;
     double totalLength;
 };
+struct EdgeGroup {
+    std::vector<int> edgeIds;
+    std::string groupType; 
+    double confidence = 0.0;
+    gp_Pnt centroid;
+    double boundingRadius = 0.0;
+};

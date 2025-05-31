@@ -100,5 +100,6 @@ namespace GeometryWrapper {
         List<Point3D>^ GetEdgePoints(int edgeId);
         Dictionary<int, ManagedEdgeClassification>^ GetEdgeClassifications(ManagedCylinderInfo cylinderInfo);
         List<ManagedToolpathCandidate>^ GetToolpathCandidates();
+        List<List<int>^>^ GetEdgeGroups();
     };
 }

@@ -146,8 +146,7 @@ namespace TubeLaserCAM.UI.Models
             var modelGroup = new Model3DGroup();
             edgeSelectionMap.Clear();
             
-            // Get cylinder info first, as it's needed for classification
-            // GetCylinderInfo() already populates the this.cylinderInfo field
+
             if (this.cylinderInfo == null) GetCylinderInfo(); // Ensure cylinderInfo is populated
 
             // Fetch and store classifications if cylinder is valid
@@ -176,9 +175,7 @@ namespace TubeLaserCAM.UI.Models
             // Lấy edge info list
             var edgeInfoList = stepReader.GetEdgeInfoList();
 
-            // Group line indices by edge (giả định các indices liên tiếp thuộc cùng edge)
             int edgeIndex = 0;
-            // int indicesPerEdge = lineIndices.Count / edgeInfoList.Count; // This logic might be flawed if edgeInfoList is empty or counts don't match
 
             foreach (var edgeInfo in edgeInfoList)
             {
@@ -202,7 +199,6 @@ namespace TubeLaserCAM.UI.Models
                     Classification = edgeClassifications.ContainsKey(edgeInfo.Id) ? edgeClassifications[edgeInfo.Id] : new EdgeClassificationData() // Assign classification
                 };
 
-                // Get ordered points for the edge from the StepReader
                 var managedEdgePoints = stepReader.GetEdgePoints(edgeInfo.Id);
                 if (managedEdgePoints != null)
                 {
@@ -216,8 +212,7 @@ namespace TubeLaserCAM.UI.Models
                 var defaultMaterial = new DiffuseMaterial(new SolidColorBrush(Colors.Blue));
                 edgeSelectionInfo.OriginalMaterial = defaultMaterial;
 
-                // Tạo geometry cho edge này dựa trên edgeSelectionInfo.Points (đã được lấy từ GetEdgePoints)
-                // Điều này đảm bảo hình học của mỗi edgeModel là độc lập và chính xác.
+
                 if (edgeSelectionInfo.Points.Count >= 2)
                 {
                     for (int i = 0; i < edgeSelectionInfo.Points.Count - 1; i++)
@@ -237,16 +232,12 @@ namespace TubeLaserCAM.UI.Models
                     }
                 }
                 
-                // Nếu không có điểm nào hoặc chỉ có 1 điểm, edgeGroup sẽ rỗng.
-                // CreateMeshFromGroup sẽ trả về một MeshGeometry3D rỗng, điều này là chấp nhận được.
 
-                // Wrap edge group trong một GeometryModel3D để dễ thao tác
                 var edgeModel = new GeometryModel3D
                 {
                     Geometry = CreateMeshFromGroup(edgeGroup), // edgeGroup giờ chỉ chứa các segment của đúng cạnh này
                     Material = defaultMaterial,
                     BackMaterial = defaultMaterial
-                    // No Tag here, GeometryModel3D does not have it.
                 };
 
                 edgeSelectionInfo.Model3D = edgeModel; // This Model3D is for material changes and hit-testing comparison
@@ -547,7 +538,16 @@ namespace TubeLaserCAM.UI.Models
             return suggestions;
         }
 
-        // Thêm class
+        public List<List<int>> GetEdgeGroups()
+        {
+            var groups = stepReader.GetEdgeGroups();
+            var result = new List<List<int>>();
+            foreach (var group in groups)
+            {
+                result.Add(group.ToList());
+            }
+            return result;
+        }
         public class ToolpathSuggestion
         {
             public List<int> EdgeIds { get; set; }

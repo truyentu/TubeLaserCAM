@@ -28,6 +28,8 @@
 #include <set>
 #include <stack>
 #include <algorithm>
+#include <sstream>
+#include <iomanip>
 
 // Additional OpenCASCADE includes
 #include <ElCLib.hxx>
@@ -39,6 +41,9 @@
 #include <Geom_BezierCurve.hxx>
 #include <TopoDS_Face.hxx>
 #include <Geom_Surface.hxx>
+
+#define _USE_MATH_DEFINES
+#include <cmath>
 
 // Custom comparator for gp_Pnt to be used in std::map
 struct GpPntComparator {
@@ -663,6 +668,14 @@ namespace GeometryKernel {
                 }
 
                 classifications[edgeId] = classification;
+                if (m_edges[edgeId].type == EdgeInfo::BSPLINE) {
+                    std::cout << "Debug BSpline #" << edgeId
+                        << ": distance=" << distIt->second
+                        << ", location=" << (classification.location == EdgeClassification::INTERNAL ? "INTERNAL" : "ON_SURFACE")
+                        << ", length=" << m_edges[edgeId].length << " mm" << std::endl;
+                }
+
+
             }
         }
         // THÊM: Phát hiện và đánh dấu axial lines
@@ -680,6 +693,39 @@ namespace GeometryKernel {
                     classifications[lineId].location = EdgeClassification::INTERNAL;
                     std::cout << "Debug - Marked edge " << lineId << " as INTERNAL (axial line)" << std::endl;
                 }
+            }
+        }
+        // Phát hiện BSpline đồng trục
+        auto collinearBSplines = DetectCollinearBSplines();
+        for (int bsplineId : collinearBSplines) {
+            classifications[bsplineId].location = EdgeClassification::INTERNAL;
+            std::cout << "Marked collinear BSpline #" << bsplineId << " as INTERNAL" << std::endl;
+        }
+        // Ẩn BSpline thẳng dọc trục (generator lines)
+        edgeId = 0;
+        edgeExp.Init(*m_shape, TopAbs_EDGE);
+        for (; edgeExp.More(); edgeExp.Next(), edgeId++) {
+            if (edgeId >= m_edges.size()) break;
+            if (m_edges[edgeId].type != EdgeInfo::BSPLINE) continue;
+
+            auto it = classifications.find(edgeId);
+            if (it == classifications.end()) continue;
+
+            TopoDS_Edge edge = TopoDS::Edge(edgeExp.Current());
+            if (!IsBSplineStraight(edge, 0.1)) continue;
+
+            Standard_Real first, last;
+            Handle(Geom_Curve) curve = BRep_Tool::Curve(edge, first, last);
+            gp_Pnt p1 = curve->Value(first);
+            gp_Pnt p2 = curve->Value(last);
+
+            if (std::abs(p1.X() - p2.X()) < 0.1 &&
+                std::abs(p1.Y() - p2.Y()) < 0.1 &&
+                std::abs(p1.Z() - p2.Z()) > 100.0) {
+
+                it->second.location = EdgeClassification::INTERNAL;
+                std::cout << "Marked vertical BSpline #" << edgeId
+                    << " as INTERNAL (Z length=" << std::abs(p1.Z() - p2.Z()) << ")" << std::endl;
             }
         }
         return classifications;
@@ -717,6 +763,23 @@ namespace GeometryKernel {
                 }
             }
             else if (m_edges[edgeId].type == EdgeInfo::BSPLINE) {
+                std::cout << "Checking BSpline #" << edgeId << ": ";
+                if (IsBSplineStraight(edge, 0.1)) {
+                    gp_Dir bsplineDir;
+                    if (GetBSplineDirection(edge, bsplineDir)) {
+                        double dotProduct = std::abs(bsplineDir.Dot(cylinderAxis));
+                        std::cout << "STRAIGHT, dot=" << dotProduct;
+                        if (dotProduct > 0.9) {
+                            std::cout << " -> AXIAL";
+                        }
+                    }
+                }
+                else {
+                    std::cout << "NOT STRAIGHT";
+                }
+                std::cout << std::endl;
+
+
                 // Kiểm tra BSpline có phải đường thẳng không
                 if (IsBSplineStraight(edge)) {
                     gp_Dir bsplineDir;
@@ -734,6 +797,47 @@ namespace GeometryKernel {
         std::cout << "Total axial edges found: " << axialLines.size() << std::endl;
         return axialLines;
     }
+
+    std::vector<int> StepReader::DetectCollinearBSplines() const {
+        std::vector<int> collinearBSplines;
+        std::map<std::string, std::vector<int>> axisGroups;
+
+        TopExp_Explorer edgeExp(*m_shape, TopAbs_EDGE);
+        int edgeId = 0;
+
+        for (; edgeExp.More(); edgeExp.Next(), edgeId++) {
+            if (m_edges[edgeId].type != EdgeInfo::BSPLINE) continue;
+
+            TopoDS_Edge edge = TopoDS::Edge(edgeExp.Current());
+            if (!IsBSplineStraight(edge, 0.1)) continue;
+
+            Standard_Real first, last;
+            Handle(Geom_Curve) curve = BRep_Tool::Curve(edge, first, last);
+            gp_Pnt p1 = curve->Value(first);
+            gp_Pnt p2 = curve->Value(last);
+
+            // Tạo key
+            std::stringstream ss;
+            ss << std::fixed << std::setprecision(1) << round(p1.X() * 10) / 10
+                << "," << round(p1.Y() * 10) / 10;
+            std::string key = ss.str();
+
+            axisGroups[key].push_back(edgeId);  // Sửa lỗi ở đây
+        }
+
+        for (const auto& group : axisGroups) {
+            if (group.second.size() >= 3) {
+                std::cout << "Found " << group.second.size()
+                    << " collinear BSplines at " << group.first << std::endl;
+                collinearBSplines.insert(collinearBSplines.end(),
+                    group.second.begin(), group.second.end());
+            }
+        }
+
+        return collinearBSplines;
+    }
+
+
 
     bool StepReader::AreLinesCollinear(const TopoDS_Edge& edge1, const TopoDS_Edge& edge2,
         double tolerance) const {
@@ -793,6 +897,11 @@ namespace GeometryKernel {
 
             if (dist > tolerance) return false;
         }
+        gp_Pnt p1 = curve->Value(first);
+        gp_Pnt p2 = curve->Value(last);
+        std::cout << "  Start: (" << p1.X() << ", " << p1.Y() << ", " << p1.Z() << ")"
+            << " End: (" << p2.X() << ", " << p2.Y() << ", " << p2.Z() << ")"
+            << " Length: " << p1.Distance(p2) << std::endl;
 
         return true;
     }
@@ -810,6 +919,11 @@ namespace GeometryKernel {
         if (v.Magnitude() < Precision::Confusion()) return false;
 
         direction = gp_Dir(v);
+
+        // DEBUG: In ra hướng thực tế
+        std::cout << "  Direction: (" << direction.X() << ", "
+            << direction.Y() << ", " << direction.Z() << ")" << std::endl;
+
         return true;
     }
 
@@ -996,6 +1110,264 @@ namespace GeometryKernel {
             [](const auto& a, const auto& b) { return a.priority > b.priority; });
 
         return candidates;
+    }
+    bool StepReader::EdgesConnected(int edge1Id, int edge2Id, double tolerance) const {
+        TopExp_Explorer exp(*m_shape, TopAbs_EDGE);
+        TopoDS_Edge e1, e2;
+        int currentId = 0;
+
+        for (; exp.More(); exp.Next(), currentId++) {
+            if (currentId == edge1Id) e1 = TopoDS::Edge(exp.Current());
+            if (currentId == edge2Id) e2 = TopoDS::Edge(exp.Current());
+        }
+
+        if (e1.IsNull() || e2.IsNull()) return false;
+
+        TopoDS_Vertex v1Start, v1End, v2Start, v2End;
+        TopExp::Vertices(e1, v1Start, v1End);
+        TopExp::Vertices(e2, v2Start, v2End);
+
+        gp_Pnt p1s = BRep_Tool::Pnt(v1Start);
+        gp_Pnt p1e = BRep_Tool::Pnt(v1End);
+        gp_Pnt p2s = BRep_Tool::Pnt(v2Start);
+        gp_Pnt p2e = BRep_Tool::Pnt(v2End);
+
+        return (p1s.Distance(p2s) < tolerance || p1s.Distance(p2e) < tolerance ||
+            p1e.Distance(p2s) < tolerance || p1e.Distance(p2e) < tolerance);
+    }
+
+    bool StepReader::IsClosedLoop(const std::vector<int>& edgeIds) const {
+        if (edgeIds.size() < 3) return false;
+
+        // Simplified check - kiểm tra endpoints
+        std::map<std::string, int> vertexCount;
+
+        for (int id : edgeIds) {
+            // Get endpoints and count occurrences
+            // Real implementation would track actual vertices
+        }
+
+        return true; // Simplified
+    }
+
+    bool StepReader::HasOnlyCircles(const std::vector<int>& edgeIds) const {
+        for (int id : edgeIds) {
+            if (m_edges[id].type != EdgeInfo::CIRCLE) return false;
+        }
+        return true;
+    }
+
+    bool StepReader::HasRectanglePattern(const std::vector<int>& edgeIds) const {
+        if (edgeIds.size() != 4) return false;
+
+        int lineCount = 0;
+        for (int id : edgeIds) {
+            if (m_edges[id].type == EdgeInfo::LINE) lineCount++;
+        }
+
+        return lineCount == 4;
+    }
+
+
+    std::vector<EdgeGroup> StepReader::GroupConnectedEdges(double tolerance) const {
+        std::vector<EdgeGroup> groups;
+        std::set<int> processed;
+
+        // Lấy danh sách edges đã lọc (không INTERNAL)
+        auto classifications = ClassifyEdges();
+        std::vector<int> visibleEdges;
+
+        for (const auto& kvp : classifications) {
+            if (kvp.second.location != EdgeClassification::INTERNAL) {
+                visibleEdges.push_back(kvp.first);
+            }
+        }
+
+        // Dùng Union-Find để gom nhóm
+        std::map<int, int> parent;
+        for (int id : visibleEdges) parent[id] = id;
+
+        std::function<int(int)> find = [&](int x) {
+            if (parent[x] != x) parent[x] = find(parent[x]);
+            return parent[x];
+            };
+
+        auto unite = [&](int x, int y) {
+            parent[find(x)] = find(y);
+            };
+
+        // Gom nhóm dựa trên endpoints và tiếp tuyến
+        for (size_t i = 0; i < visibleEdges.size(); i++) {
+            std::cout << "Debug - Checking " << visibleEdges.size() << " visible edges for grouping" << std::endl;
+            // Debug chi tiết
+            for (size_t i = 0; i < visibleEdges.size(); i++) {
+                int id = visibleEdges[i];
+                std::cout << "Visible edge " << id << ": type=" << m_edges[id].type
+                    << ", length=" << m_edges[id].length << std::endl;
+            }
+
+            for (size_t j = i + 1; j < visibleEdges.size(); j++) {
+                int id1 = visibleEdges[i];
+                int id2 = visibleEdges[j];
+
+                bool connected = EdgesConnected(id1, id2, tolerance);
+                if (connected) {
+                    std::cout << "Edge " << id1 << "-" << id2 << " connected, checking tangent..." << std::endl;
+                    bool tangent = AreEdgesTangent(id1, id2, 15.0);
+                    bool perpendicular = AreEdgesPerpendicular(id1, id2, 15.0);
+                    if (tangent || perpendicular) {
+                        unite(id1, id2);
+                    }
+                    std::cout << "Edge " << id1 << " - " << id2
+                        << ": connected=" << connected
+                        << ", tangent=" << tangent << std::endl;
+
+                    if (tangent) {
+                        unite(id1, id2);
+                    }
+                }
+
+                // Kiểm tra endpoints
+                if (EdgesConnected(id1, id2, tolerance)) {
+                    // Kiểm tra tiếp tuyến
+                    if (AreEdgesTangent(id1, id2, 175.0)) { // 15 độ tolerance
+                        unite(id1, id2);
+                    }
+                }
+            }
+        }
+
+        // Tạo groups từ Union-Find
+        std::map<int, std::vector<int>> groupMap;
+        for (int id : visibleEdges) {
+            groupMap[find(id)].push_back(id);
+        }
+
+        // Chuyển thành EdgeGroup
+        for (const auto& kvp : groupMap) {
+            std::cout << "Debug - Found " << groupMap.size() << " groups:" << std::endl;
+            for (const auto& kvp : groupMap) {
+                std::cout << "  Group root " << kvp.first << " has "
+                    << kvp.second.size() << " edges: ";
+                for (int id : kvp.second) std::cout << id << " ";
+                std::cout << std::endl;
+            }
+            if (kvp.second.size() >= 2) { // Ít nhất 2 edges
+                EdgeGroup group;
+                group.edgeIds = kvp.second;
+
+                // Phân loại group
+                if (IsClosedLoop(group.edgeIds)) {
+                    if (HasOnlyCircles(group.edgeIds)) {
+                        group.groupType = "circle";
+                    }
+                    else if (HasRectanglePattern(group.edgeIds)) {
+                        group.groupType = "rectangle";
+                    }
+                    else {
+                        group.groupType = "closed_profile";
+                    }
+                    group.confidence = 0.9;
+                }
+                else {
+                    group.groupType = "open_chain";
+                    group.confidence = 0.7;
+                }
+
+                groups.push_back(group);
+            }
+        }
+
+        return groups;
+    }
+
+    bool StepReader::AreEdgesTangent(int edge1Id, int edge2Id, double angleTolerance) const {
+        TopExp_Explorer exp(*m_shape, TopAbs_EDGE);
+        TopoDS_Edge e1, e2;
+        int currentId = 0;
+
+        for (; exp.More(); exp.Next(), currentId++) {
+            if (currentId == edge1Id) e1 = TopoDS::Edge(exp.Current());
+            if (currentId == edge2Id) e2 = TopoDS::Edge(exp.Current());
+        }
+
+        if (e1.IsNull() || e2.IsNull()) return false;
+
+        Standard_Real f1, l1, f2, l2;
+        Handle(Geom_Curve) c1 = BRep_Tool::Curve(e1, f1, l1);
+        Handle(Geom_Curve) c2 = BRep_Tool::Curve(e2, f2, l2);
+
+        if (c1.IsNull() || c2.IsNull()) return false;
+
+        // Kiểm tra tại điểm nối
+        gp_Pnt p1e = c1->Value(l1);
+        gp_Pnt p2s = c2->Value(f2);
+
+        if (p1e.Distance(p2s) < 0.1) {
+            gp_Vec t1, t2;
+            c1->D1(l1, p1e, t1);
+            c2->D1(f2, p2s, t2);
+
+            double angle = t1.Angle(t2) * 180.0 / M_PI;
+            return angle < angleTolerance || angle >(180.0 - angleTolerance);
+        }
+
+        return false;
+    }
+    bool StepReader::AreEdgesPerpendicular(int edge1Id, int edge2Id, double angleTolerance) const {
+        TopExp_Explorer exp(*m_shape, TopAbs_EDGE);
+        TopoDS_Edge e1, e2;
+        int currentId = 0;
+
+        for (; exp.More(); exp.Next(), currentId++) {
+            if (currentId == edge1Id) e1 = TopoDS::Edge(exp.Current());
+            if (currentId == edge2Id) e2 = TopoDS::Edge(exp.Current());
+        }
+
+        if (e1.IsNull() || e2.IsNull()) return false;
+
+        Standard_Real f1, l1, f2, l2;
+        Handle(Geom_Curve) c1 = BRep_Tool::Curve(e1, f1, l1);
+        Handle(Geom_Curve) c2 = BRep_Tool::Curve(e2, f2, l2);
+
+        if (c1.IsNull() || c2.IsNull()) return false;
+
+        // Lấy endpoints
+        gp_Pnt p1s = c1->Value(f1);
+        gp_Pnt p1e = c1->Value(l1);
+        gp_Pnt p2s = c2->Value(f2);
+        gp_Pnt p2e = c2->Value(l2);
+
+        gp_Vec t1, t2;
+        gp_Pnt p;
+
+        // Kiểm tra 4 trường hợp kết nối
+        if (p1e.Distance(p2s) < 0.1) {
+            c1->D1(l1, p, t1);
+            c2->D1(f2, p, t2);
+        }
+        else if (p1e.Distance(p2e) < 0.1) {
+            c1->D1(l1, p, t1);
+            c2->D1(l2, p, t2);
+            t2.Reverse();
+        }
+        else if (p1s.Distance(p2s) < 0.1) {
+            c1->D1(f1, p, t1);
+            t1.Reverse();
+            c2->D1(f2, p, t2);
+        }
+        else if (p1s.Distance(p2e) < 0.1) {
+            c1->D1(f1, p, t1);
+            t1.Reverse();
+            c2->D1(l2, p, t2);
+            t2.Reverse();
+        }
+        else {
+            return false; // Không kết nối
+        }
+
+        double angle = t1.Angle(t2) * 180.0 / M_PI;
+        return (angle > 90 - angleTolerance && angle < 90 + angleTolerance);
     }
 
 } // namespace GeometryKernel
