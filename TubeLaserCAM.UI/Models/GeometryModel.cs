@@ -36,6 +36,8 @@ namespace TubeLaserCAM.UI.Models
         private Dictionary<int, EdgeSelectionInfo> edgeSelectionMap;
         private Dictionary<int, EdgeClassificationData> edgeClassifications;
         private List<int> selectedEdgeIds;
+        private Transform3D cylinderToYTransform = Transform3D.Identity;
+
 
         // Thêm property cho rendering mode
         public enum RenderMode { Wireframe, SolidWithCuts }
@@ -154,7 +156,14 @@ namespace TubeLaserCAM.UI.Models
             var modelGroup = new Model3DGroup();
 
             if (cylinderInfo == null || !cylinderInfo.IsValid)
+            {
+                System.Diagnostics.Debug.WriteLine("CreateSolidCylinderWithCuts: Invalid cylinder info");
                 return CreateWireframeModel();
+            }
+
+            System.Diagnostics.Debug.WriteLine($"Creating solid cylinder: Center=({cylinderInfo.Center.X:F2},{cylinderInfo.Center.Y:F2},{cylinderInfo.Center.Z:F2})");
+            System.Diagnostics.Debug.WriteLine($"Axis=({cylinderInfo.Axis.X:F2},{cylinderInfo.Axis.Y:F2},{cylinderInfo.Axis.Z:F2})");
+            System.Diagnostics.Debug.WriteLine($"Radius={cylinderInfo.Radius:F2}, Length={cylinderInfo.Length:F2}");
 
             // Ensure edgeSelectionMap is populated
             if (edgeSelectionMap.Count == 0)
@@ -162,35 +171,152 @@ namespace TubeLaserCAM.UI.Models
                 CreateWireframeModel(); // This populates edgeSelectionMap
             }
 
-            // 1. Tạo cylinder surface
+            // 1. Lấy thông tin cylinder GỐC (trước transform)
+            var originalInfo = stepReader.DetectMainCylinder();
+
+            // 2. Tạo cylinder mesh với thông tin GỐC
             var cylinderMesh = CreateCylinderMesh(
-                cylinderInfo.Center,
-                cylinderInfo.Axis,
-                cylinderInfo.Radius,
-                cylinderInfo.Length,
+                new System.Windows.Media.Media3D.Point3D(originalInfo.CenterX, originalInfo.CenterY, originalInfo.CenterZ),
+                new Vector3D(originalInfo.AxisX, originalInfo.AxisY, originalInfo.AxisZ),
+                originalInfo.Radius,
+                originalInfo.Length,
                 32
             );
 
-            // Use EmissiveMaterial for better visibility
+            // Debug mesh
+            System.Diagnostics.Debug.WriteLine($"Mesh created: Positions={cylinderMesh.Positions.Count}, Triangles={cylinderMesh.TriangleIndices.Count}");
+
+            // 3. Material
             var cylinderMaterial = new DiffuseMaterial(new SolidColorBrush(Color.FromArgb(255, 200, 200, 200)));
-            modelGroup.Children.Add(new GeometryModel3D
+
+            // 4. Tạo GeometryModel3D
+            var cylinderModel = new GeometryModel3D
             {
                 Geometry = cylinderMesh,
                 Material = cylinderMaterial,
                 BackMaterial = cylinderMaterial
-            });
+            };
 
-            // 2. Tạo visual cho các lỗ cắt
-            CreateCutoutVisuals(modelGroup);
+            // 5. QUAN TRỌNG: THÊM cylinderModel vào modelGroup
+            modelGroup.Children.Add(cylinderModel);
 
-            // 3. Hiển thị toolpaths dạng nét đứt
-            var toolpathGroup = CreateDashedToolpaths();
-            foreach (var child in toolpathGroup.Children)
+            // 6. THÊM MỚI: Vẽ wireframe cuts màu xanh
+            var wireframeCuts = CreateWireframeCuts();
+            foreach (var cut in wireframeCuts.Children)
             {
-                modelGroup.Children.Add(child);
+                modelGroup.Children.Add(cut);
+            }
+
+            // 7. Hiển thị selected edges dạng nét đứt (màu xanh lá)
+            var selectedEdges = CreateSelectedEdgeHighlights();
+            foreach (var edge in selectedEdges.Children)
+            {
+                modelGroup.Children.Add(edge);
+            }
+
+            // 8. Debug trước transform
+            System.Diagnostics.Debug.WriteLine($"Model group has {modelGroup.Children.Count} children before transform");
+
+            // 9. APPLY TRANSFORM cho toàn bộ group
+            if (cylinderToYTransform != Transform3D.Identity)
+            {
+                System.Diagnostics.Debug.WriteLine("Applying cylinderToYTransform");
+
+                var transformedGroup = new Model3DGroup();
+                transformedGroup.Transform = cylinderToYTransform;
+
+                // Move tất cả children vào transformed group
+                while (modelGroup.Children.Count > 0)
+                {
+                    var child = modelGroup.Children[0];
+                    modelGroup.Children.RemoveAt(0);
+                    transformedGroup.Children.Add(child);
+                }
+
+                System.Diagnostics.Debug.WriteLine($"Transformed group has {transformedGroup.Children.Count} children");
+                return transformedGroup;
             }
 
             return modelGroup;
+        }
+
+        private Model3DGroup CreateWireframeCuts()
+        {
+            var group = new Model3DGroup();
+            var edgeMaterial = new DiffuseMaterial(new SolidColorBrush(Colors.DarkBlue));
+
+            System.Diagnostics.Debug.WriteLine($"CreateWireframeCuts: Total edges = {edgeSelectionMap.Count}");
+
+            // Lấy thông tin cylinder GỐC
+            var originalInfo = stepReader.DetectMainCylinder();
+
+            int edgeCount = 0;
+            foreach (var kvp in edgeSelectionMap)
+            {
+                var edgeInfo = kvp.Value;
+
+                if (edgeInfo.Classification.Location == EdgeLocation.Internal)
+                    continue;
+
+                if (edgeInfo.Points.Count >= 2)
+                {
+                    edgeCount++;
+
+                    // QUAN TRỌNG: Tạo points GỐC bằng cách ĐẢO NGƯỢC transform
+                    var inverseTransform = cylinderToYTransform.Inverse;
+
+                    for (int i = 0; i < edgeInfo.Points.Count - 1; i++)
+                    {
+                        // Apply inverse transform để có points gốc
+                        var p1 = inverseTransform.Transform(edgeInfo.Points[i]);
+                        var p2 = inverseTransform.Transform(edgeInfo.Points[i + 1]);
+
+                        var segment = CreateCylinderBetweenPoints(p1, p2, 0.4);
+
+                        group.Children.Add(new GeometryModel3D
+                        {
+                            Geometry = segment,
+                            Material = edgeMaterial,
+                            BackMaterial = edgeMaterial
+                        });
+                    }
+                }
+            }
+
+            System.Diagnostics.Debug.WriteLine($"CreateWireframeCuts: Created {edgeCount} edges");
+
+            return group;
+        }
+
+        private Model3DGroup CreateSelectedEdgeHighlights()
+        {
+            var group = new Model3DGroup();
+            var selectedMaterial = new DiffuseMaterial(new SolidColorBrush(Colors.Lime));
+
+            // Lấy inverse transform
+            var inverseTransform = cylinderToYTransform.Inverse;
+
+            foreach (var kvp in edgeSelectionMap)
+            {
+                var edgeInfo = kvp.Value;
+
+                if (!edgeInfo.IsSelected || edgeInfo.Classification.Location == EdgeLocation.Internal)
+                    continue;
+
+                if (edgeInfo.Points.Count >= 2)
+                {
+                    // Transform ngược lại points
+                    var originalPoints = new List<System.Windows.Media.Media3D.Point3D>();
+                    foreach (var p in edgeInfo.Points)
+                    {
+                        originalPoints.Add(inverseTransform.Transform(p));
+                    }
+
+                    DrawDashedEdge(group, originalPoints, selectedMaterial, 0.6);
+                }
+            }
+
+            return group;
         }
 
         private MeshGeometry3D CreateCylinderMesh(System.Windows.Media.Media3D.Point3D center, Vector3D axis, double radius, double length, int segments)
@@ -236,6 +362,59 @@ namespace TubeLaserCAM.UI.Models
             }
 
             return mesh;
+        }
+
+        private void DrawDashedEdge(Model3DGroup group, List<System.Windows.Media.Media3D.Point3D> points, Material material, double thickness)
+        {
+            // Cài đặt dash pattern
+            double dashLength = 5.0;  // Chiều dài mỗi nét
+            double gapLength = 3.0;   // Khoảng cách giữa các nét
+
+            double currentDistance = 0;
+            bool isDash = true;
+
+            for (int i = 0; i < points.Count - 1; i++)
+            {
+                System.Windows.Media.Media3D.Point3D p1 = points[i];
+                System.Windows.Media.Media3D.Point3D p2 = points[i + 1];
+                Vector3D direction = p2 - p1;
+                double segmentLength = direction.Length;
+                direction.Normalize();
+
+                double segmentProgress = 0;
+
+                while (segmentProgress < segmentLength)
+                {
+                    double remainingInSegment = segmentLength - segmentProgress;
+                    double currentPatternLength = isDash ? dashLength : gapLength;
+                    double actualLength = Math.Min(currentPatternLength, remainingInSegment);
+
+                    System.Windows.Media.Media3D.Point3D dashStart = p1 + direction * segmentProgress;
+                    System.Windows.Media.Media3D.Point3D dashEnd = dashStart + direction * actualLength;
+
+                    if (isDash)
+                    {
+                        // Vẽ dash
+                        var dashCylinder = CreateCylinderBetweenPoints(dashStart, dashEnd, thickness);
+
+                        group.Children.Add(new GeometryModel3D
+                        {
+                            Geometry = dashCylinder,
+                            Material = material,
+                            BackMaterial = material
+                        });
+                    }
+
+                    segmentProgress += actualLength;
+                    currentDistance += actualLength;
+
+                    // Chuyển dash/gap
+                    if (actualLength >= currentPatternLength - 0.001)
+                    {
+                        isDash = !isDash;
+                    }
+                }
+            }
         }
 
         private Model3DGroup CreateDashedToolpaths()
@@ -410,7 +589,6 @@ namespace TubeLaserCAM.UI.Models
 
                 double dotProduct = Vector3D.DotProduct(currentAxis, targetAxis);
 
-                // Nếu axis chưa song song với Y
                 if (Math.Abs(dotProduct) < 0.999)
                 {
                     Vector3D rotationAxis = Vector3D.CrossProduct(currentAxis, targetAxis);
@@ -424,7 +602,7 @@ namespace TubeLaserCAM.UI.Models
                             new AxisAngleRotation3D(rotationAxis, angle),
                             this.cylinderInfo.Center
                         );
-
+                        this.cylinderToYTransform = cylinderTransform;
                         System.Diagnostics.Debug.WriteLine($"Rotating cylinder by {angle:F1}° around axis ({rotationAxis.X:F2},{rotationAxis.Y:F2},{rotationAxis.Z:F2})");
                     }
                 }
@@ -588,9 +766,6 @@ namespace TubeLaserCAM.UI.Models
 
         public CylinderData GetCylinderInfo()
         {
-            // Force edge classification first
-            FetchAndStoreEdgeClassifications();
-
             var info = stepReader.DetectMainCylinder();
 
             cylinderInfo = new CylinderData
@@ -601,46 +776,21 @@ namespace TubeLaserCAM.UI.Models
                 Axis = new Vector3D(info.AxisX, info.AxisY, info.AxisZ),
                 Center = new System.Windows.Media.Media3D.Point3D(info.CenterX, info.CenterY, info.CenterZ)
             };
-
-            // QUAN TRỌNG: Sau khi transform wireframe, cập nhật axis thành Y
-            if (cylinderInfo.IsValid)
+            System.Diagnostics.Debug.WriteLine($"Original Cylinder Axis: ({info.AxisX:F2}, {info.AxisY:F2}, {info.AxisZ:F2})");
+            // Nếu axis là Z, không cần transform
+            if (Math.Abs(info.AxisZ - 1.0) < 0.01)
             {
-                Vector3D currentAxis = cylinderInfo.Axis;
-                currentAxis.Normalize();
-                Vector3D targetAxis = new Vector3D(0, 1, 0); // Y axis
-
-                double dotProduct = Vector3D.DotProduct(currentAxis, targetAxis);
-
-                // Nếu axis chưa song song với Y
-                if (Math.Abs(dotProduct) < 0.999)
-                {
-                    // Tính rotation transform
-                    Vector3D rotationAxis = Vector3D.CrossProduct(currentAxis, targetAxis);
-                    if (rotationAxis.Length > 0.001)
-                    {
-                        rotationAxis.Normalize();
-                        double angle = Math.Acos(Math.Max(-1, Math.Min(1, dotProduct))) * 180 / Math.PI;
-
-                        var transform = new RotateTransform3D(
-                            new AxisAngleRotation3D(rotationAxis, angle),
-                            cylinderInfo.Center
-                        );
-
-                        // Transform center
-                        cylinderInfo.Center = transform.Transform(cylinderInfo.Center);
-
-                        // QUAN TRỌNG: Update axis thành Y
-                        cylinderInfo.Axis = new Vector3D(0, 1, 0);
-                    }
-                }
-                else
-                {
-                    // Đã song song với Y
-                    cylinderInfo.Axis = new Vector3D(0, 1, 0);
-                }
+                System.Diagnostics.Debug.WriteLine("Cylinder already aligned with Z axis, no transform needed");
+                cylinderToYTransform = Transform3D.Identity;
             }
 
-            System.Diagnostics.Debug.WriteLine($"CylinderInfo after transform: Axis=({cylinderInfo.Axis.X:F2}, {cylinderInfo.Axis.Y:F2}, {cylinderInfo.Axis.Z:F2})");
+            // QUAN TRỌNG: Transform center theo cùng cách
+            if (cylinderInfo.IsValid && cylinderToYTransform != Transform3D.Identity)
+            {
+                cylinderInfo.Center = cylinderToYTransform.Transform(cylinderInfo.Center);
+                // Axis sau transform luôn là Y
+                cylinderInfo.Axis = new Vector3D(0, 1, 0);
+            }
 
             return cylinderInfo;
         }
@@ -650,28 +800,24 @@ namespace TubeLaserCAM.UI.Models
             var group = new Model3DGroup();
             if (cylinderInfo == null || !cylinderInfo.IsValid) return group;
 
-            System.Diagnostics.Debug.WriteLine($"CreateAxisVisualization - Axis: ({cylinderInfo.Axis.X:F2}, {cylinderInfo.Axis.Y:F2}, {cylinderInfo.Axis.Z:F2})");
-            System.Diagnostics.Debug.WriteLine($"CreateAxisVisualization - Center: ({cylinderInfo.Center.X:F2}, {cylinderInfo.Center.Y:F2}, {cylinderInfo.Center.Z:F2})");
+            var axisLength = cylinderInfo.Length;
 
-            if (Math.Abs(cylinderInfo.Axis.Y - 1.0) > 0.01)
-            {
-                System.Diagnostics.Debug.WriteLine("WARNING: Axis is not Y direction!");
-            }
-
-            var axisLength = cylinderInfo.Length * 1.2; // Dài hơn một chút
-
-            // Điểm đầu và cuối - DỌC THEO Y
+            // Axis theo Y (sau khi đã transform)
             var startPoint = new System.Windows.Media.Media3D.Point3D(
                 cylinderInfo.Center.X,
-                cylinderInfo.Center.Y - (axisLength / 2),  // Đi xuống
+                cylinderInfo.Center.Y - (axisLength / 2),
                 cylinderInfo.Center.Z
             );
 
             var endPoint = new System.Windows.Media.Media3D.Point3D(
                 cylinderInfo.Center.X,
-                cylinderInfo.Center.Y + (axisLength / 2),  // Đi lên
+                cylinderInfo.Center.Y + (axisLength / 2),
                 cylinderInfo.Center.Z
             );
+
+            // APPLY CÙNG TRANSFORM NHƯ WIREFRAME
+            startPoint = cylinderToYTransform.Transform(startPoint);
+            endPoint = cylinderToYTransform.Transform(endPoint);
 
             // Vẽ cylinder màu đỏ
             var axisCylinder = CreateCylinderBetweenPoints(startPoint, endPoint, 2.0);
@@ -684,23 +830,22 @@ namespace TubeLaserCAM.UI.Models
                 BackMaterial = axisMaterial
             });
 
-            // Arrow head ở đầu TRÊN (endPoint)
+            // XÓA PHẦN ARROW HEAD - có thể đây là nguyên nhân tạo ra trục lạ
+            /* 
+            // Arrow head
             var arrowLength = 10.0;
             var arrowRadius = 5.0;
-            var arrowBase = new System.Windows.Media.Media3D.Point3D(
-                endPoint.X,
-                endPoint.Y - arrowLength,  // Base của arrow
-                endPoint.Z
-            );
+            var arrowBase = endPoint - (new Vector3D(0, 1, 0) * arrowLength);
+            arrowBase = cylinderToYTransform.Transform(arrowBase);  // SAI: transform 2 lần
 
             var arrowMesh = CreateCone(arrowBase, endPoint, arrowRadius);
-
             group.Children.Add(new GeometryModel3D
             {
                 Geometry = arrowMesh,
                 Material = axisMaterial,
                 BackMaterial = axisMaterial
             });
+            */
 
             return group;
         }

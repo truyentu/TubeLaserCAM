@@ -283,6 +283,10 @@ namespace GeometryKernel {
                     axisInfo.startCenter = startCenter;
                     axisInfo.endCenter = endCenter;
                     axisInfo.axisDirection = gp_Dir(axisVec);
+                    std::cout << "Axis from "
+                        << "(" << startCenter.X() << "," << startCenter.Y() << "," << startCenter.Z() << ") to "
+                        << "(" << endCenter.X() << "," << endCenter.Y() << "," << endCenter.Z() << ")"
+                        << std::endl;
                 }
             }
         }
@@ -525,6 +529,7 @@ namespace GeometryKernel {
 
         // Phân tích axis của ống
         TubeAxisInfo tubeAxis = AnalyzeTubeAxis();
+
         if (!tubeAxis.isValid) {
             // Fallback về phương pháp cũ
             CylinderInfo cylInfo = DetectCylinder();
@@ -1447,14 +1452,32 @@ namespace GeometryKernel {
     // Tìm cylinder chính (outer surface) dựa trên radius lớn nhất
     CylinderInfo StepReader::DetectMainCylinder() const {
         CylinderInfo mainCylinder;
+        std::cout << "=== DetectMainCylinder Debug ===" << std::endl;
+
         if (!m_shape || m_shape->IsNull()) return mainCylinder;
 
         // Bước 1: Phân tích axis của ống (giống AnalyzeTubeAxis)
         TubeAxisInfo tubeAxis = AnalyzeTubeAxis();
         if (!tubeAxis.isValid) {
+            std::cout << "Tube axis detected: ("
+                << tubeAxis.axisDirection.X() << ", "
+                << tubeAxis.axisDirection.Y() << ", "
+                << tubeAxis.axisDirection.Z() << ")" << std::endl;
+
             // Fallback về phương pháp cũ
             CylinderInfo cylInfo = DetectCylinder();
-            if (!cylInfo.isValid) return mainCylinder;
+            if (!cylInfo.isValid)
+            {
+                std::cout << "Original cylinder axis: ("
+                    << cylInfo.axisX << ", "
+                    << cylInfo.axisY << ", "
+                    << cylInfo.axisZ << ")" << std::endl;
+                std::cout << "Center: ("
+                    << cylInfo.centerX << ", "
+                    << cylInfo.centerY << ", "
+                    << cylInfo.centerZ << ")" << std::endl;
+                return mainCylinder;
+            }
 
             // Sử dụng cylinder info để tạo axis
             gp_Pnt center(cylInfo.centerX, cylInfo.centerY, cylInfo.centerZ);

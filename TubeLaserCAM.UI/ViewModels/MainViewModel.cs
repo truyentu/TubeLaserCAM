@@ -229,6 +229,7 @@ namespace TubeLaserCAM.UI.ViewModels
 
                         if (CylinderInfo.IsValid)
                         {
+                            AxisModel = null;
                             AxisModel = geometryModel.CreateAxisVisualization();
                             StatusText = $"File loaded. Found cylinder: R={CylinderInfo.Radius:F2}mm, L={CylinderInfo.Length:F2}mm, {geometryModel.GetEdgeCount()} edges.";
                         }
@@ -367,7 +368,12 @@ namespace TubeLaserCAM.UI.ViewModels
                 OnPropertyChanged();
                 if (value && cylinderInfo != null && cylinderInfo.IsValid)
                 {
+                    AxisModel = null;
                     AxisModel = geometryModel.CreateAxisVisualization();
+                }
+                else if (!value)
+                {
+                    AxisModel = null; // Clear khi tắt
                 }
             }
         }
