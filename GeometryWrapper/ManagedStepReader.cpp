@@ -232,3 +232,47 @@ List<List<int>^>^ ManagedStepReader::GetEdgeGroups() {
 
     return managedGroups;
 }
+
+List<ManagedUnrolledPoint^>^ ManagedStepReader::UnrollEdge(
+    int edgeId,
+    ManagedCylinderInfo^ cylinderInfo,
+    ManagedUnrollingParams^ params) {
+
+    // Convert managed params to native
+    GeometryKernel::UnrollingParams nativeParams;
+    nativeParams.chordTolerance = params->ChordTolerance;
+    nativeParams.angleTolerance = params->AngleTolerance;
+    nativeParams.minPointsPerCurve = params->MinPoints;
+    nativeParams.maxPointsPerCurve = params->MaxPoints;
+    nativeParams.unwrapAngles = params->UnwrapAngles;
+
+    // Convert cylinder info
+    GeometryKernel::CylinderInfo nativeCylinder;
+    nativeCylinder.radius = cylinderInfo->Radius;
+    nativeCylinder.length = cylinderInfo->Length;
+    nativeCylinder.axisX = cylinderInfo->AxisX;
+    nativeCylinder.axisY = cylinderInfo->AxisY;
+    nativeCylinder.axisZ = cylinderInfo->AxisZ;
+    nativeCylinder.centerX = cylinderInfo->CenterX;
+    nativeCylinder.centerY = cylinderInfo->CenterY;
+    nativeCylinder.centerZ = cylinderInfo->CenterZ;
+    nativeCylinder.isValid = cylinderInfo->IsValid;
+
+    // Call native unroll - SỬA DÒNG NÀY
+    std::vector<GeometryKernel::UnrolledPoint> nativePoints =
+        m_pNativeReader->UnrollEdge(edgeId, nativeCylinder, nativeParams);
+
+    // Convert to managed list
+    List<ManagedUnrolledPoint^>^ managedPoints =
+        gcnew List<ManagedUnrolledPoint^>();
+
+    for (const auto& pt : nativePoints) {
+        ManagedUnrolledPoint^ managedPt = gcnew ManagedUnrolledPoint();
+        managedPt->Y = pt.Y;
+        managedPt->C = pt.C;
+        managedPt->X = pt.X;
+        managedPoints->Add(managedPt);
+    }
+
+    return managedPoints;
+}

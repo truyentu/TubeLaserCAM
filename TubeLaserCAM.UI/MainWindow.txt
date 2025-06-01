@@ -25,6 +25,11 @@
             <Separator/>
             <Label Content="Edges:" VerticalAlignment="Center"/>
             <Label Content="{Binding EdgeList.Count}" VerticalAlignment="Center" FontWeight="Bold"/>
+            <Separator Margin="0,10"/>
+            <CheckBox Content="Show Axis" IsChecked="{Binding ShowAxis}" Margin="0,5"/>
+            <CheckBox Content="Solid Mode (Show Cuts)" 
+          IsChecked="{Binding ShowSolidMode, Mode=TwoWay}" 
+          Margin="0,5"/>
         </ToolBar>
 
         <!-- Main Content -->
@@ -138,12 +143,50 @@
                             </Grid>
 
                             <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
-                                <Button Content="Apply Filter" Margin="0,0,5,0" Padding="10,5"/>
-                                <Button Content="Clear Filter" Padding="10,5"/>
+                                <Button Content="Apply Filter" Command="{Binding ApplyFilterCommand}" Margin="0,0,5,0" Padding="10,5"/>
+                                <Button Content="Clear Filter" Command="{Binding ClearFilterCommand}" Padding="10,5"/>
                             </StackPanel>
 
                             <TextBlock Text="{Binding EdgeList.Count, StringFormat='Showing {0} edges'}" 
                                        Margin="0,10,0,0" FontStyle="Italic"/>
+                        </StackPanel>
+                    </Expander>
+                    <Expander Header="Auto Suggest Toolpaths" Margin="5">
+                        <StackPanel Margin="10">
+                            <Button Content="Auto Suggest" 
+                Command="{Binding AutoSuggestToolpathsCommand}" 
+                Margin="0,0,0,10" Padding="10,5"/>
+
+                            <ListBox ItemsSource="{Binding SuggestedToolpaths}"
+                 MaxHeight="200"
+                 ScrollViewer.VerticalScrollBarVisibility="Auto">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border BorderBrush="LightBlue" BorderThickness="1"
+                            Margin="2" Padding="5" CornerRadius="3">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+
+                                                <StackPanel Grid.Column="0">
+                                                    <TextBlock Text="{Binding Type}" FontWeight="Bold"/>
+                                                    <TextBlock Text="{Binding EdgeIds.Count, StringFormat='Edges: {0}'}" FontSize="10"/>
+                                                    <TextBlock Text="{Binding Priority, StringFormat='Priority: {0:F2}'}" FontSize="10"/>
+                                                    <TextBlock Text="{Binding TotalLength, StringFormat='Length: {0:F2}mm'}" FontSize="10"/>
+                                                </StackPanel>
+
+                                                <Button Grid.Column="1" Content="Accept"
+                                    Command="{Binding DataContext.AcceptSuggestionCommand,
+                                              RelativeSource={RelativeSource AncestorType=Window}}"
+                                    CommandParameter="{Binding}"
+                                    Margin="5,0,0,0"/>
+                                            </Grid>
+                                        </Border>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
                         </StackPanel>
                     </Expander>
 
@@ -265,9 +308,7 @@
 
                 <!-- Models -->
                 <ModelVisual3D Content="{Binding WireframeModel}"/>
-                <ModelVisual3D Content="{Binding AxisModel}"
-                               Visibility="{Binding ShowAxis, 
-                                          Converter={StaticResource BoolToVisibilityConverter}}"/>
+                <ModelVisual3D Content="{Binding AxisModel}"/>
 
                 <!-- Grid -->
                 <helix:GridLinesVisual3D Width="200" Length="200" 

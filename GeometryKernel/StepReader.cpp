@@ -89,10 +89,12 @@ namespace GeometryKernel {
         m_shape = std::make_unique<TopoDS_Shape>(reader.OneShape());
 
         m_edges.clear();
+        m_topoEdgeMap.clear();
         TopExp_Explorer edgeExplorer;
         int edgeIdCounter = 0;
         for (edgeExplorer.Init(*m_shape, TopAbs_EDGE); edgeExplorer.More(); edgeExplorer.Next()) {
             TopoDS_Edge currentEdge = TopoDS::Edge(edgeExplorer.Current());
+            m_topoEdgeMap[edgeIdCounter] = currentEdge;
             BRepAdaptor_Curve curveAdaptor(currentEdge);
             EdgeInfo edgeInfo;
             edgeInfo.id = edgeIdCounter++;
@@ -1413,5 +1415,33 @@ namespace GeometryKernel {
         double angle = t1.Angle(t2) * 180.0 / M_PI;
         return (angle > 90 - angleTolerance && angle < 90 + angleTolerance);
     }
+    std::vector<UnrolledPoint> StepReader::UnrollEdge(
+        int edgeId,
+        const CylinderInfo& cylinderInfo,
+        const UnrollingParams& params) {
+
+        // Kiểm tra edge có trong map không
+        auto it = m_topoEdgeMap.find(edgeId);
+        if (it == m_topoEdgeMap.end()) {
+            return std::vector<UnrolledPoint>();
+        }
+
+        // Setup params
+        UnrollingParams engineParams = params;
+        engineParams.cylinderRadius = cylinderInfo.radius;
+        engineParams.cylinderCenter = gp_Pnt(
+            cylinderInfo.centerX,
+            cylinderInfo.centerY,
+            cylinderInfo.centerZ);
+        engineParams.cylinderAxis = gp_Vec(
+            cylinderInfo.axisX,
+            cylinderInfo.axisY,
+            cylinderInfo.axisZ);
+
+        // Unroll
+        UnrollingEngine engine(engineParams);
+        return engine.UnrollEdge(it->second);
+    }
+
 
 } // namespace GeometryKernel

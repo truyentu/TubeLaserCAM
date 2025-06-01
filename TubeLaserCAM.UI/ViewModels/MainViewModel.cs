@@ -17,6 +17,7 @@ using System.Collections.Generic;
 using Newtonsoft.Json;
 using System.IO;
 using static TubeLaserCAM.UI.Models.GeometryModel;
+using TubeLaserCAM.UI.Views;
 
 namespace TubeLaserCAM.UI.ViewModels
 {
@@ -67,6 +68,7 @@ namespace TubeLaserCAM.UI.ViewModels
         private Model3DGroup axisModel;
         private SelectionMode currentSelectionMode = SelectionMode.Single;
         private ObservableCollection<EdgeSelectionInfo> selectedToolpaths;
+        private GCodeSettings gcodeSettings = new GCodeSettings();
         private int? hoveredEdgeId;
         private ObservableCollection<ToolpathSuggestion> suggestedToolpaths;
         public ObservableCollection<ToolpathSuggestion> SuggestedToolpaths
@@ -75,6 +77,16 @@ namespace TubeLaserCAM.UI.ViewModels
             set
             {
                 suggestedToolpaths = value;
+                OnPropertyChanged();
+            }
+        }
+        private ObservableCollection<UnrolledToolpath> unrolledToolpaths;
+        public ObservableCollection<UnrolledToolpath> UnrolledToolpaths
+        {
+            get => unrolledToolpaths;
+            set
+            {
+                unrolledToolpaths = value;
                 OnPropertyChanged();
             }
         }
@@ -111,12 +123,16 @@ namespace TubeLaserCAM.UI.ViewModels
         public ICommand AutoSuggestToolpathsCommand { get; }
         public ICommand AcceptSuggestionCommand { get; }
         public ICommand RecognizeShapesCommand { get; }
+        public ICommand UnrollToolpathsCommand { get; }
+        public ICommand GenerateGCodeCommand { get; }
+
 
         public MainViewModel()
         {
             geometryModel = new GeometryModel();
             EdgeList = new ObservableCollection<EdgeInfoWrapper>();
             SelectedToolpaths = new ObservableCollection<EdgeSelectionInfo>();
+            UnrolledToolpaths = new ObservableCollection<UnrolledToolpath>();
 
             LoadFileCommand = new RelayCommand(ExecuteLoadFile);
             MouseMoveCommand = new RelayCommand(ExecuteMouseMove);
@@ -136,6 +152,8 @@ namespace TubeLaserCAM.UI.ViewModels
             AutoSuggestToolpathsCommand = new RelayCommand(ExecuteAutoSuggestToolpaths);
             AcceptSuggestionCommand = new RelayCommand(ExecuteAcceptSuggestion);
             RecognizeShapesCommand = new RelayCommand(ExecuteRecognizeShapes);
+            UnrollToolpathsCommand = new RelayCommand(ExecuteUnrollToolpaths);
+            GenerateGCodeCommand = new RelayCommand(ExecuteGenerateGCode);
 
         }
 
@@ -203,7 +221,9 @@ namespace TubeLaserCAM.UI.ViewModels
                         EdgeList.Clear();
                         // geometryModel.GetEdgeInfo() returns List<ManagedEdgeInfo>
                         // We need to get the EdgeSelectionInfo from geometryModel which now contains classification
-                        var allEdgeSelectionInfos = geometryModel.GetAllEdgeInfos(); // Assuming this returns Dictionary<int, EdgeSelectionInfo>
+                        var allEdgeSelectionInfos = geometryModel.GetAllEdgeInfos();
+                        System.Diagnostics.Debug.WriteLine($"Got {allEdgeSelectionInfos?.Count ?? 0} edge infos");
+
                         if (allEdgeSelectionInfos != null)
                         {
                             foreach (var kvp in allEdgeSelectionInfos.OrderBy(e => e.Key)) // Order by ID for consistency
@@ -237,6 +257,52 @@ namespace TubeLaserCAM.UI.ViewModels
                 {
                     StatusText = $"Error: {ex.Message}";
                 }
+            }
+        }
+
+        private void ExecuteGenerateGCode(object parameter)
+        {
+            if (UnrolledToolpaths.Count == 0)
+            {
+                StatusText = "No unrolled toolpaths to generate G-Code";
+                return;
+            }
+
+            try
+            {
+                // Show settings dialog
+                var settingsDialog = new Views.GCodeSettingsDialog(gcodeSettings);
+
+                if (settingsDialog.ShowDialog() == true)
+                {
+                    // Update settings
+                    gcodeSettings = settingsDialog.Settings;
+
+                    // Generate G-Code
+                    var generator = new GCodeGenerator(gcodeSettings);
+                    var gcode = generator.GenerateGCode(
+                        UnrolledToolpaths.ToList(),
+                        CylinderInfo
+                    );
+
+                    // Save dialog
+                    var saveDialog = new SaveFileDialog
+                    {
+                        Filter = "G-Code Files (*.nc;*.gcode)|*.nc;*.gcode|All Files (*.*)|*.*",
+                        DefaultExt = ".nc",
+                        FileName = $"{gcodeSettings.ProgramName}.nc"
+                    };
+
+                    if (saveDialog.ShowDialog() == true)
+                    {
+                        System.IO.File.WriteAllText(saveDialog.FileName, gcode);
+                        StatusText = $"G-Code saved to {System.IO.Path.GetFileName(saveDialog.FileName)}";
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                StatusText = $"Error generating G-Code: {ex.Message}";
             }
         }
 
@@ -389,6 +455,9 @@ namespace TubeLaserCAM.UI.ViewModels
             }
             return null;
         }
+
+        
+
 
         private void ExecuteMouseDown(object parameter)
         {
@@ -1075,6 +1144,42 @@ namespace TubeLaserCAM.UI.ViewModels
                         SelectedToolpaths.Add(edgeInfo);
                     }
                 }
+            }
+        }
+
+        private void ExecuteUnrollToolpaths(object parameter)
+        {
+            if (SelectedToolpaths.Count == 0)
+            {
+                StatusText = "No toolpaths selected to unroll";
+                return;
+            }
+
+            try
+            {
+                StatusText = "Unrolling toolpaths...";
+                System.Diagnostics.Debug.WriteLine($"Unrolling {SelectedToolpaths.Count} selected toolpaths");
+
+                var unrolled = geometryModel.UnrollSelectedToolpaths();
+                System.Diagnostics.Debug.WriteLine($"Unrolled result: {unrolled?.Count ?? 0} toolpaths");
+
+                UnrolledToolpaths.Clear();
+                foreach (var toolpath in unrolled)
+                {
+                    System.Diagnostics.Debug.WriteLine($"  Toolpath {toolpath.EdgeId}: {toolpath.Points?.Count ?? 0} points");
+                    UnrolledToolpaths.Add(toolpath);
+                }
+
+                StatusText = $"Unrolled {unrolled.Count()} toolpaths";
+
+                // Mở 2D View window
+                var view2D = new Views.Unrolled2DView(unrolled, CylinderInfo);
+                view2D.Show();
+            }
+            catch (Exception ex)
+            {
+                StatusText = $"Error unrolling: {ex.Message}";
+                System.Diagnostics.Debug.WriteLine($"Unroll error: {ex}");
             }
         }
 

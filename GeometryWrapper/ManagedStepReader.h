@@ -9,10 +9,13 @@ namespace GeometryKernel {
     class StepReader;
     struct EdgeInfo;
     struct EdgeClassification;
+    struct UnrolledPoint;
+    struct UnrollingParams;
 }
 
 namespace GeometryWrapper {
 
+    // Value structs
     public value struct ManagedCylinderInfo {
         bool IsValid;
         double Radius;
@@ -47,7 +50,6 @@ namespace GeometryWrapper {
         int OriginalEdgeId;
     };
 
-    // Managed struct tương ứng với EdgeInfo
     public value struct ManagedEdgeInfo {
         enum class EdgeType {
             Line,
@@ -62,7 +64,6 @@ namespace GeometryWrapper {
         property int Id;
     };
 
-    // Managed Point3D
     public value struct Point3D {
         double X;
         double Y;
@@ -71,7 +72,6 @@ namespace GeometryWrapper {
         Point3D(double x, double y, double z) : X(x), Y(y), Z(z) {}
     };
 
-    // Di chuyển ManagedToolpathCandidate ra ngoài class
     public value struct ManagedToolpathCandidate {
         array<int>^ EdgeIds;
         double Priority;
@@ -79,27 +79,66 @@ namespace GeometryWrapper {
         double TotalLength;
     };
 
-    // Managed wrapper class
+    // Ref classes - KHAI BÁO MỘT LẦN
+    public ref class ManagedUnrolledPoint {
+    public:
+        property double Y;
+        property double C;
+        property double X;
+    };
+
+    public ref class ManagedUnrollingParams {
+    public:
+        property double ChordTolerance;
+        property double AngleTolerance;
+        property int MinPoints;
+        property int MaxPoints;
+        property bool UnwrapAngles;
+
+        ManagedUnrollingParams() {
+            ChordTolerance = 0.1;
+            AngleTolerance = 5.0;
+            MinPoints = 10;
+            MaxPoints = 1000;
+            UnwrapAngles = true;
+        }
+    };
+
+    // Main managed wrapper class
     public ref class ManagedStepReader {
     private:
-        // Pointer to native C++ object
         GeometryKernel::StepReader* m_pNativeReader;
 
     public:
+        // Constructor/Destructor
         ManagedStepReader();
         ~ManagedStepReader();
         !ManagedStepReader(); // Finalizer
 
+        // Basic file operations
         bool LoadFile(String^ filePath);
         int GetEdgeCount();
         List<ManagedEdgeInfo>^ GetEdgeInfoList();
 
-        // Lấy dữ liệu wireframe để hiển thị
+        // Wireframe data
         void GetWireframeData(List<Point3D>^% vertices, List<Tuple<int, int>^>^% lineIndices);
+
+        // Cylinder detection
         ManagedCylinderInfo DetectCylinder();
+
+        // Edge operations
         List<Point3D>^ GetEdgePoints(int edgeId);
         Dictionary<int, ManagedEdgeClassification>^ GetEdgeClassifications(ManagedCylinderInfo cylinderInfo);
+
+        // Toolpath operations
         List<ManagedToolpathCandidate>^ GetToolpathCandidates();
         List<List<int>^>^ GetEdgeGroups();
+
+        // Unrolling operations
+        List<ManagedUnrolledPoint^>^ UnrollEdge(
+            int edgeId,
+            ManagedCylinderInfo^ cylinderInfo,
+            ManagedUnrollingParams^ params);
     };
-}
+
+} // namespace GeometryWrapper

@@ -4,6 +4,7 @@
 #include <memory>
 #include <map>
 #include "GeometryTypes.h"  // Include types
+#include "UnrollingEngine.h"
 
 // OpenCASCADE includes
 #include <TopoDS_Edge.hxx>
@@ -23,6 +24,7 @@ namespace GeometryKernel {
     private:
         std::unique_ptr<TopoDS_Shape> m_shape;
         std::vector<EdgeInfo> m_edges;
+        std::map<int, TopoDS_Edge> m_topoEdgeMap;  // Map ID -> TopoDS_Edge
 
     public:
         StepReader();
@@ -67,5 +69,10 @@ namespace GeometryKernel {
         bool HasOnlyCircles(const std::vector<int>& edgeIds) const;
         bool HasRectanglePattern(const std::vector<int>& edgeIds) const;
         bool AreEdgesPerpendicular(int edge1Id, int edge2Id, double angleTolerance = 15.0) const;
+        // THÊM function unroll
+        std::vector<UnrolledPoint> UnrollEdge(
+            int edgeId,  // EdgeInfo.id
+            const CylinderInfo& cylinderInfo,
+            const UnrollingParams& params);
     };
 }

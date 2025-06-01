@@ -390,6 +390,7 @@ namespace TubeLaserCAM.UI.Models
             var modelGroup = new Model3DGroup();
             edgeSelectionMap.Clear();
 
+            System.Diagnostics.Debug.WriteLine($"Starting CreateWireframeModel");
 
             if (this.cylinderInfo == null) GetCylinderInfo(); // Ensure cylinderInfo is populated
 
@@ -404,6 +405,8 @@ namespace TubeLaserCAM.UI.Models
             List<GeometryWrapper.Point3D> wrapperVertices = null;
             List<Tuple<int, int>> lineIndices = null;
             stepReader.GetWireframeData(ref wrapperVertices, ref lineIndices);
+            System.Diagnostics.Debug.WriteLine($"Got wireframe data: {wrapperVertices?.Count ?? 0} vertices, {lineIndices?.Count ?? 0} line indices");
+
 
             if (wrapperVertices == null || lineIndices == null)
                 return modelGroup;
@@ -418,6 +421,8 @@ namespace TubeLaserCAM.UI.Models
 
             // Lấy edge info list
             var edgeInfoList = stepReader.GetEdgeInfoList();
+            System.Diagnostics.Debug.WriteLine($"Got {edgeInfoList?.Count ?? 0} edges from stepReader");
+
 
             int edgeIndex = 0;
 
@@ -1022,6 +1027,112 @@ namespace TubeLaserCAM.UI.Models
                     (p1.Z + p2.Z + p3.Z) / 3
                 );
             }
+        }
+        // Thêm vào GeometryModel.cs
+
+        private UnrollingSettings defaultUnrollingSettings = new UnrollingSettings();
+
+        public List<UnrolledToolpath> UnrollSelectedToolpaths()
+        {
+            var selectedIds = GetSelectedEdgeIds();
+            return UnrollSelectedEdges(selectedIds);
+        }
+
+        public List<UnrolledToolpath> UnrollSelectedEdges(List<int> edgeIds)
+        {
+            var unrolledToolpaths = new List<UnrolledToolpath>();
+
+            if (cylinderInfo == null || !cylinderInfo.IsValid)
+            {
+                System.Diagnostics.Debug.WriteLine("Cannot unroll: No valid cylinder detected");
+                return unrolledToolpaths;
+            }
+
+            // Convert settings
+            var managedParams = new GeometryWrapper.ManagedUnrollingParams
+            {
+                ChordTolerance = defaultUnrollingSettings.ChordTolerance,
+                AngleTolerance = defaultUnrollingSettings.AngleTolerance,
+                MinPoints = defaultUnrollingSettings.MinPoints,
+                MaxPoints = defaultUnrollingSettings.MaxPoints,
+                UnwrapAngles = defaultUnrollingSettings.UnwrapAngles
+            };
+
+            // Convert cylinder info
+            var managedCylinder = new GeometryWrapper.ManagedCylinderInfo
+            {
+                IsValid = cylinderInfo.IsValid,
+                Radius = cylinderInfo.Radius,
+                Length = cylinderInfo.Length,
+                AxisX = cylinderInfo.Axis.X,
+                AxisY = cylinderInfo.Axis.Y,
+                AxisZ = cylinderInfo.Axis.Z,
+                CenterX = cylinderInfo.Center.X,
+                CenterY = cylinderInfo.Center.Y,
+                CenterZ = cylinderInfo.Center.Z
+            };
+
+            foreach (var edgeId in edgeIds)
+            {
+                try
+                {
+                    // Get edge info
+                    var edgeInfo = edgeSelectionMap.ContainsKey(edgeId)
+                        ? edgeSelectionMap[edgeId]
+                        : null;
+
+                    if (edgeInfo == null) continue;
+
+                    // Unroll edge
+                    var managedPoints = stepReader.UnrollEdge(edgeId, managedCylinder, managedParams);
+
+                    if (managedPoints != null && managedPoints.Count > 0)
+                    {
+                        // Convert to C# points
+                        var points = new List<UnrolledPoint>();
+                        double minY = double.MaxValue, maxY = double.MinValue;
+                        double minC = double.MaxValue, maxC = double.MinValue;
+
+                        foreach (var mp in managedPoints)
+                        {
+                            var point = new UnrolledPoint
+                            {
+                                Y = mp.Y,
+                                C = mp.C,
+                                X = mp.X
+                            };
+                            points.Add(point);
+
+                            minY = Math.Min(minY, point.Y);
+                            maxY = Math.Max(maxY, point.Y);
+                            minC = Math.Min(minC, point.C);
+                            maxC = Math.Max(maxC, point.C);
+                        }
+
+                        var unrolledToolpath = new UnrolledToolpath
+                        {
+                            EdgeId = edgeId,
+                            Points = points,
+                            EdgeInfo = new EdgeInfoWrapper(edgeInfo.EdgeInfo),
+                            MinY = minY,
+                            MaxY = maxY,
+                            TotalRotation = maxC - minC,
+                            RequiresSeamHandling = (maxC - minC) > 350 // Crosses 360 boundary
+                        };
+
+                        unrolledToolpaths.Add(unrolledToolpath);
+
+                        System.Diagnostics.Debug.WriteLine($"Unrolled edge {edgeId}: " +
+                            $"{points.Count} points, Y:[{minY:F2},{maxY:F2}], C:[{minC:F2},{maxC:F2}]");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"Error unrolling edge {edgeId}: {ex.Message}");
+                }
+            }
+
+            return unrolledToolpaths;
         }
     }
 }

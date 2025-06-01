@@ -137,10 +137,12 @@
   <ItemGroup>
     <ClCompile Include="main.cpp" />
     <ClCompile Include="StepReader.cpp" />
+    <ClCompile Include="UnrollingEngine.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="GeometryTypes.h" />
     <ClInclude Include="StepReader.h" />
+    <ClInclude Include="UnrollingEngine.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
