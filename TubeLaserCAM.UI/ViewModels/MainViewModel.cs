@@ -290,12 +290,10 @@ namespace TubeLaserCAM.UI.ViewModels
 
             try
             {
-                // Show settings dialog
                 var settingsDialog = new Views.GCodeSettingsDialog(gcodeSettings);
 
                 if (settingsDialog.ShowDialog() == true)
                 {
-                    // Update settings
                     gcodeSettings = settingsDialog.Settings;
 
                     // Generate G-Code
@@ -317,12 +315,34 @@ namespace TubeLaserCAM.UI.ViewModels
                     {
                         System.IO.File.WriteAllText(saveDialog.FileName, gcode);
                         StatusText = $"G-Code saved to {System.IO.Path.GetFileName(saveDialog.FileName)}";
+
+                        // Ask if user wants to preview
+                        var result = MessageBox.Show(
+                            "G-Code generated successfully. Do you want to preview the toolpath?",
+                            "Preview Toolpath",
+                            MessageBoxButton.YesNo,
+                            MessageBoxImage.Question);
+
+                        if (result == MessageBoxResult.Yes)
+                        {
+                            // Find existing 2D view window or use the current one
+                            var existingWindow = Application.Current.Windows
+                                .OfType<Unrolled2DView>()
+                                .FirstOrDefault();
+
+                            if (existingWindow != null)
+                            {
+                                existingWindow.LoadGCodeForVisualization(gcode);
+                                existingWindow.Activate();
+                            }
+                        }
                     }
                 }
             }
             catch (Exception ex)
             {
                 StatusText = $"Error generating G-Code: {ex.Message}";
+                MessageBox.Show(ex.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 

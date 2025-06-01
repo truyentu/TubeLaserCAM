@@ -69,6 +69,7 @@
     <Compile Include="Converters\EnumBooleanConverter.cs" />
     <Compile Include="Converters\FilterParametersConverter.cs" />
     <Compile Include="Models\GCodeGenerator.cs" />
+    <Compile Include="Models\GCodeParser.cs" />
     <Compile Include="Models\ToolpathConfiguration.cs" />
     <Compile Include="Models\UnrollingModels.cs" />
     <Compile Include="ViewModels\MainViewModel.cs" />
