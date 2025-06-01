@@ -23,6 +23,8 @@
 #include <GeomAPI_IntCS.hxx>
 #include <Geom_Plane.hxx>
 #include <BRepAlgoAPI_Section.hxx>
+#include <BRepBndLib.hxx>
+#include <Bnd_Box.hxx>
 
 // Additional includes needed
 #include <set>
@@ -1442,6 +1444,152 @@ namespace GeometryKernel {
         UnrollingEngine engine(engineParams);
         return engine.UnrollEdge(it->second);
     }
+    // Tìm cylinder chính (outer surface) dựa trên radius lớn nhất
+    CylinderInfo StepReader::DetectMainCylinder() const {
+        CylinderInfo mainCylinder;
+        if (!m_shape || m_shape->IsNull()) return mainCylinder;
+
+        // Bước 1: Phân tích axis của ống (giống AnalyzeTubeAxis)
+        TubeAxisInfo tubeAxis = AnalyzeTubeAxis();
+        if (!tubeAxis.isValid) {
+            // Fallback về phương pháp cũ
+            CylinderInfo cylInfo = DetectCylinder();
+            if (!cylInfo.isValid) return mainCylinder;
+
+            // Sử dụng cylinder info để tạo axis
+            gp_Pnt center(cylInfo.centerX, cylInfo.centerY, cylInfo.centerZ);
+            gp_Dir dir(cylInfo.axisX, cylInfo.axisY, cylInfo.axisZ);
+            tubeAxis.isValid = true;
+            tubeAxis.axisDirection = dir;
+            tubeAxis.startCenter = center;
+        }
+
+        // Tạo axis từ tube info
+        gp_Ax1 centralAxis(tubeAxis.startCenter, tubeAxis.axisDirection);
+
+        // Bước 2: COPY CHÍNH XÁC từ ClassifyEdges - Tính khoảng cách của tất cả edges đến axis
+        std::map<int, double> edgeDistances;
+        std::vector<double> allDistances;
+
+        TopExp_Explorer edgeExp(*m_shape, TopAbs_EDGE);
+        int edgeId = 0;
+
+        for (; edgeExp.More(); edgeExp.Next(), edgeId++) {
+            TopoDS_Edge edge = TopoDS::Edge(edgeExp.Current());
+
+            // COPY CHÍNH XÁC từ ComputeDistanceToAxis
+            Standard_Real first, last;
+            Handle(Geom_Curve) curve = BRep_Tool::Curve(edge, first, last);
+
+            if (curve.IsNull()) continue;
+
+            // Sample nhiều điểm trên edge
+            const int numSamples = 60;
+            double totalDistance = 0.0;
+            int validSamples = 0;
+
+            for (int i = 0; i <= numSamples; i++) {
+                double param = first + (last - first) * i / numSamples;
+                gp_Pnt pt = curve->Value(param);
+
+                // Tính khoảng cách từ điểm đến axis
+                double dist = pt.Distance(centralAxis.Location());
+                gp_Vec v(centralAxis.Location(), pt);
+                double projLength = v.Dot(gp_Vec(centralAxis.Direction()));
+                gp_Pnt projectedPt = centralAxis.Location();
+                projectedPt.Translate(projLength * gp_Vec(centralAxis.Direction()));
+
+                double perpDist = pt.Distance(projectedPt);
+                totalDistance += perpDist;
+                validSamples++;
+            }
+
+            if (validSamples > 0) {
+                double avgDistance = totalDistance / validSamples;
+                edgeDistances[edgeId] = avgDistance;
+                allDistances.push_back(avgDistance);
+            }
+        }
+
+        // Bước 3: COPY CHÍNH XÁC logic phân nhóm từ ClassifyEdges
+        if (!allDistances.empty()) {
+            std::sort(allDistances.begin(), allDistances.end());
+
+            std::vector<std::pair<double, int>> radiusGroups;
+            double currentRadius = allDistances[0];
+            int currentCount = 1;
+
+            const double GROUPING_TOLERANCE = 0.5; // 0.5mm cho nhóm
+
+            for (size_t i = 1; i < allDistances.size(); i++) {
+                if (std::abs(allDistances[i] - currentRadius) < GROUPING_TOLERANCE) {
+                    currentRadius = (currentRadius * currentCount + allDistances[i]) / (currentCount + 1);
+                    currentCount++;
+                }
+                else {
+                    radiusGroups.push_back(std::make_pair(currentRadius, currentCount));
+                    currentRadius = allDistances[i];
+                    currentCount = 1;
+                }
+            }
+            radiusGroups.push_back(std::make_pair(currentRadius, currentCount));
+
+            // Debug output
+            std::cout << "Debug - Found radius groups:" << std::endl;
+            for (const auto& group : radiusGroups) {
+                std::cout << "  Radius: " << group.first << " mm, Count: " << group.second << std::endl;
+            }
+
+            // Sắp xếp theo bán kính
+            std::sort(radiusGroups.begin(), radiusGroups.end(),
+                [](const auto& a, const auto& b) { return a.first > b.first; });
+
+            if (!radiusGroups.empty()) {
+                mainCylinder.radius = radiusGroups[0].first;
+                std::cout << "Max radius (outer surface): " << mainCylinder.radius << " mm" << std::endl;
+            }
+        }
+
+        // Bước 4: Set axis info
+        mainCylinder.isValid = true;
+        mainCylinder.axisX = tubeAxis.axisDirection.X();
+        mainCylinder.axisY = tubeAxis.axisDirection.Y();
+        mainCylinder.axisZ = tubeAxis.axisDirection.Z();
+        mainCylinder.centerX = tubeAxis.startCenter.X();
+        mainCylinder.centerY = tubeAxis.startCenter.Y();
+        mainCylinder.centerZ = tubeAxis.startCenter.Z();
+
+        // Bước 5: Tính chiều dài thực
+        double minProj = std::numeric_limits<double>::max();
+        double maxProj = std::numeric_limits<double>::min();
+
+        TopExp_Explorer vertexExp(*m_shape, TopAbs_VERTEX);
+        for (; vertexExp.More(); vertexExp.Next()) {
+            TopoDS_Vertex vertex = TopoDS::Vertex(vertexExp.Current());
+            gp_Pnt point = BRep_Tool::Pnt(vertex);
+
+            gp_Vec vecFromCenter(tubeAxis.startCenter, point);
+            double projection = vecFromCenter.Dot(gp_Vec(tubeAxis.axisDirection));
+
+            minProj = std::min(minProj, projection);
+            maxProj = std::max(maxProj, projection);
+        }
+
+        mainCylinder.length = maxProj - minProj;
+
+        // Cập nhật center về giữa
+        double midProjection = (minProj + maxProj) / 2.0;
+        gp_Vec offset = gp_Vec(tubeAxis.axisDirection) * midProjection;
+        mainCylinder.centerX = tubeAxis.startCenter.X() + offset.X();
+        mainCylinder.centerY = tubeAxis.startCenter.Y() + offset.Y();
+        mainCylinder.centerZ = tubeAxis.startCenter.Z() + offset.Z();
+
+        std::cout << "Main cylinder: R=" << mainCylinder.radius
+            << ", L=" << mainCylinder.length << " mm" << std::endl;
+
+        return mainCylinder;
+    }
+
 
 
 } // namespace GeometryKernel

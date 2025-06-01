@@ -31,6 +31,7 @@
           IsChecked="{Binding ShowSolidMode, Mode=TwoWay}" 
           Margin="0,5"/>
             <Button Content="Generate G-Code" 
+                    
         Command="{Binding GenerateGCodeCommand}"
         Background="Green"
         Foreground="White"
@@ -44,6 +45,20 @@
                     </ToolTip>
                 </Button.ToolTip>
             </Button>
+            <ToggleButton Name="btnLockCamera" 
+              Content="Lock Camera" 
+              IsChecked="{Binding IsCameraLocked}"
+              Margin="10,0,0,0">
+                <ToggleButton.ToolTip>
+                    <ToolTip>
+                        <TextBlock Text="Lock camera to rotate around Y axis only (tube rotation mode)"/>
+                    </ToolTip>
+                </ToggleButton.ToolTip>
+            </ToggleButton>
+            <Separator/>
+            <Button Content="Front (F)" Click="SetFrontView_Click" Padding="5,2"/>
+            <Button Content="Top" Click="SetTopView_Click" Padding="5,2"/>
+            <Button Content="Side" Click="SetSideView_Click" Padding="5,2"/>
         </ToolBar>
 
         <!-- Main Content -->
@@ -304,7 +319,9 @@
                                    ShowCoordinateSystem="True"
                                    ShowViewCube="True"
                                    Background="LightGray"
-                                   x:Name="viewport3D">
+                                   x:Name="viewport3D"
+                                   PreviewMouseMove="Viewport3D_PreviewMouseMove">
+              
 
                 <!-- Mouse interaction -->
                 <i:Interaction.Triggers>

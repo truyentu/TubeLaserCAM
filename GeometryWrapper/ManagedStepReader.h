@@ -139,6 +139,7 @@ namespace GeometryWrapper {
             int edgeId,
             ManagedCylinderInfo^ cylinderInfo,
             ManagedUnrollingParams^ params);
+        ManagedCylinderInfo DetectMainCylinder();
     };
 
 } // namespace GeometryWrapper

@@ -276,3 +276,23 @@ List<ManagedUnrolledPoint^>^ ManagedStepReader::UnrollEdge(
 
     return managedPoints;
 }
+ManagedCylinderInfo ManagedStepReader::DetectMainCylinder() {
+    ManagedCylinderInfo managedInfo;
+    managedInfo.IsValid = false;
+
+    if (m_pNativeReader == nullptr) return managedInfo;
+
+    GeometryKernel::CylinderInfo nativeInfo = m_pNativeReader->DetectMainCylinder();
+
+    managedInfo.IsValid = nativeInfo.isValid;
+    managedInfo.Radius = nativeInfo.radius;
+    managedInfo.Length = nativeInfo.length;
+    managedInfo.AxisX = nativeInfo.axisX;
+    managedInfo.AxisY = nativeInfo.axisY;
+    managedInfo.AxisZ = nativeInfo.axisZ;
+    managedInfo.CenterX = nativeInfo.centerX;
+    managedInfo.CenterY = nativeInfo.centerY;
+    managedInfo.CenterZ = nativeInfo.centerZ;
+
+    return managedInfo;
+}

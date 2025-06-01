@@ -18,6 +18,8 @@ using Newtonsoft.Json;
 using System.IO;
 using static TubeLaserCAM.UI.Models.GeometryModel;
 using TubeLaserCAM.UI.Views;
+using Point3D = System.Windows.Media.Media3D.Point3D;
+using Vector3D = System.Windows.Media.Media3D.Vector3D;
 
 namespace TubeLaserCAM.UI.ViewModels
 {
@@ -70,6 +72,7 @@ namespace TubeLaserCAM.UI.ViewModels
         private ObservableCollection<EdgeSelectionInfo> selectedToolpaths;
         private GCodeSettings gcodeSettings = new GCodeSettings();
         private int? hoveredEdgeId;
+        private bool isCameraLocked = false;
         private ObservableCollection<ToolpathSuggestion> suggestedToolpaths;
         public ObservableCollection<ToolpathSuggestion> SuggestedToolpaths
         {
@@ -80,6 +83,7 @@ namespace TubeLaserCAM.UI.ViewModels
                 OnPropertyChanged();
             }
         }
+
         private ObservableCollection<UnrolledToolpath> unrolledToolpaths;
         public ObservableCollection<UnrolledToolpath> UnrolledToolpaths
         {
@@ -90,7 +94,15 @@ namespace TubeLaserCAM.UI.ViewModels
                 OnPropertyChanged();
             }
         }
-
+        public bool IsCameraLocked
+        {
+            get => isCameraLocked;
+            set
+            {
+                isCameraLocked = value;
+                OnPropertyChanged();
+            }
+        }
         public SelectionMode CurrentSelectionMode
         {
             get => currentSelectionMode;
@@ -125,6 +137,11 @@ namespace TubeLaserCAM.UI.ViewModels
         public ICommand RecognizeShapesCommand { get; }
         public ICommand UnrollToolpathsCommand { get; }
         public ICommand GenerateGCodeCommand { get; }
+        public ICommand ToggleCameraLockCommand { get; }
+        public ICommand SetFrontViewCommand { get; }
+        public ICommand SetTopViewCommand { get; }
+        public ICommand SetSideViewCommand { get; }
+
 
 
         public MainViewModel()
@@ -154,6 +171,8 @@ namespace TubeLaserCAM.UI.ViewModels
             RecognizeShapesCommand = new RelayCommand(ExecuteRecognizeShapes);
             UnrollToolpathsCommand = new RelayCommand(ExecuteUnrollToolpaths);
             GenerateGCodeCommand = new RelayCommand(ExecuteGenerateGCode);
+            ToggleCameraLockCommand = new RelayCommand(ExecuteToggleCameraLock);
+
 
         }
 
@@ -346,6 +365,10 @@ namespace TubeLaserCAM.UI.ViewModels
             {
                 showAxis = value;
                 OnPropertyChanged();
+                if (value && cylinderInfo != null && cylinderInfo.IsValid)
+                {
+                    AxisModel = geometryModel.CreateAxisVisualization();
+                }
             }
         }
         public bool ShowSolidMode
@@ -405,6 +428,29 @@ namespace TubeLaserCAM.UI.ViewModels
             }
         }
 
+        private void ExecuteSetFrontView(object parameter)
+        {
+            // Camera nhìn dọc theo Z axis
+            RequestCameraPosition?.Invoke(
+                new Point3D(0, 0, 500),      // Position
+                new Vector3D(0, 0, -1),      // LookDirection
+                new Vector3D(0, 1, 0)        // UpDirection
+            );
+        }
+
+        private void ExecuteSetTopView(object parameter)
+        {
+            // Camera nhìn từ trên xuống (dọc theo Y axis)
+            RequestCameraPosition?.Invoke(
+                new Point3D(0, 500, 0),      // Position
+                new Vector3D(0, -1, 0),      // LookDirection
+                new Vector3D(0, 0, -1)       // UpDirection
+            );
+        }
+
+        // Event để MainWindow handle
+        public event Action<Point3D, Vector3D, Vector3D> RequestCameraPosition;
+
         private Viewport3D FindViewport3D(object source)
         {
             if (source is Viewport3D viewport) return viewport;
@@ -455,8 +501,15 @@ namespace TubeLaserCAM.UI.ViewModels
             }
             return null;
         }
-
-        
+        private void ExecuteToggleCameraLock(object parameter)
+        {
+            IsCameraLocked = !IsCameraLocked;
+            StatusText = IsCameraLocked ? "Camera locked - Rotation around Y axis only" : "Camera unlocked";
+        }
+        private void UpdateCameraConstraints()
+        {
+            // Sẽ implement trong XAML với Binding
+        }
 
 
         private void ExecuteMouseDown(object parameter)

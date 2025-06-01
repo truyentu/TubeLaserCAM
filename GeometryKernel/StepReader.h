@@ -74,5 +74,8 @@ namespace GeometryKernel {
             int edgeId,  // EdgeInfo.id
             const CylinderInfo& cylinderInfo,
             const UnrollingParams& params);
+        CylinderInfo DetectMainCylinder() const;//t1
+        double CalculateOverallLength() const;//t2
+
     };
 }
