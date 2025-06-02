@@ -1,21 +1,63 @@
-﻿// GeometryWrapper/Header Files/ManagedStepReader.h
-#pragma once
+﻿#pragma once
+
+// INCLUDE ĐẦY ĐỦ HEADER FILES
+#include "../GeometryKernel/GeometryTypes.h"  // QUAN TRỌNG - Include FULL definition
 
 using namespace System;
 using namespace System::Collections::Generic;
 
-// Forward declaration
+// Forward declarations CHỈ CHO NHỮNG GÌ KHÔNG CẦN FULL DEFINITION
 namespace GeometryKernel {
-    class StepReader;
-    struct EdgeInfo;
-    struct EdgeClassification;
-    struct UnrolledPoint;
-    struct UnrollingParams;
+    class StepReader;          
+    struct EdgeInfo;          
+    struct EdgeClassification; 
+    struct UnrolledPoint;     
+    struct UnrollingParams;   
+    // struct ProfileInfo;   
 }
 
 namespace GeometryWrapper {
 
-    // Value structs
+    public value struct ManagedGapInfo {
+        int FromEdgeId;
+        int ToEdgeId;
+        double GapDistance;
+        String^ SuggestedMethod;  
+        double Confidence;
+    };
+
+    // Managed version của ProfileInfo
+    public value struct ManagedProfileInfo {
+        array<int>^ OrderedEdgeIds;
+        bool IsClosed;
+        bool IsValid;
+        String^ ProfileType;
+        double TotalLength;
+        int EdgeCount;
+
+        // THÊM CÁC PROPERTIES MỚI:
+        array<ManagedGapInfo>^ Gaps;
+        double TotalGapLength;
+        double ProfileConfidence;
+        bool HasVirtualEdges;
+
+        // Constructor để init
+        ManagedProfileInfo(bool valid) {
+            IsValid = valid;
+            IsClosed = false;
+            OrderedEdgeIds = nullptr;
+            ProfileType = "UNKNOWN";
+            TotalLength = 0.0;
+            EdgeCount = 0;
+            // THÊM INIT CHO PROPERTIES MỚI:
+            Gaps = nullptr;
+            TotalGapLength = 0.0;
+            ProfileConfidence = 1.0;
+            HasVirtualEdges = false;
+        }
+    };
+
+
     public value struct ManagedCylinderInfo {
         bool IsValid;
         double Radius;
@@ -79,6 +121,10 @@ namespace GeometryWrapper {
         double TotalLength;
     };
 
+    
+
+    
+
     // Ref classes - KHAI BÁO MỘT LẦN
     public ref class ManagedUnrolledPoint {
     public:
@@ -108,6 +154,8 @@ namespace GeometryWrapper {
     public ref class ManagedStepReader {
     private:
         GeometryKernel::StepReader* m_pNativeReader;
+        // Helper method - NOT static
+        String^ ConvertProfileTypeToString(int typeValue);
 
     public:
         // Constructor/Destructor
@@ -140,6 +188,9 @@ namespace GeometryWrapper {
             ManagedCylinderInfo^ cylinderInfo,
             ManagedUnrollingParams^ params);
         ManagedCylinderInfo DetectMainCylinder();
+        // Profile detection methods
+        ManagedProfileInfo DetectCompleteProfile(int edgeId);
+        List<ManagedProfileInfo>^ DetectAllProfiles();
     };
 
 } // namespace GeometryWrapper

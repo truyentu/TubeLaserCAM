@@ -41,11 +41,17 @@ namespace GeometryKernel {
         TubeAxisInfo AnalyzeTubeAxis() const;
         ThickCylinderInfo DetectThickCylinder() const;
         double ComputeDistanceToAxis(const TopoDS_Edge& edge, const gp_Ax1& axis) const;
+
         // Phát hiện các line song song với trục cylinder
         std::vector<int> DetectAxialLines() const;
 
         // Kiểm tra BSpline có phải là đường thẳng không
         bool IsBSplineStraight(const TopoDS_Edge& edge, double tolerance = 0.01) const;
+
+        // THÊM: BSpline analysis với detailed info
+        bool IsBSplineStraightDetailed(const TopoDS_Edge& edge,
+            double tolerance,
+            BSplineStraightInfo& info) const;
 
         // Lấy hướng của BSpline thẳng
         bool GetBSplineDirection(const TopoDS_Edge& edge, gp_Dir& direction) const;
@@ -69,13 +75,49 @@ namespace GeometryKernel {
         bool HasOnlyCircles(const std::vector<int>& edgeIds) const;
         bool HasRectanglePattern(const std::vector<int>& edgeIds) const;
         bool AreEdgesPerpendicular(int edge1Id, int edge2Id, double angleTolerance = 15.0) const;
+
         // THÊM function unroll
         std::vector<UnrolledPoint> UnrollEdge(
             int edgeId,  // EdgeInfo.id
             const CylinderInfo& cylinderInfo,
             const UnrollingParams& params);
-        CylinderInfo DetectMainCylinder() const;//t1
-        double CalculateOverallLength() const;//t2
 
+        CylinderInfo DetectMainCylinder() const;
+        double CalculateOverallLength() const;
+
+        // Profile detection methods
+        ProfileInfo DetectCompleteProfile(int startEdgeId) const;
+        std::vector<EdgeConnection> FindEdgeConnections(
+            const std::vector<int>& edgeIds,
+            double positionTolerance = 0.01,    // 0.01mm
+            double tangentTolerance = 15.0      // 15 degrees
+        ) const;
+
+        // THÊM: Gap handling methods
+        std::vector<EdgeConnection> FindEdgeConnectionsWithGaps(
+            const std::vector<int>& edgeIds) const;
+
+        void CheckConnectionWithGap(const TopoDS_Edge& edge1,
+            const TopoDS_Edge& edge2,
+            int id1, int id2,
+            std::vector<EdgeConnection>& connections,
+            double maxGapTol) const;
+
+        ProfileInfo BuildProfileWithGaps(int startEdgeId,
+            const std::vector<EdgeConnection>& connections) const;
+
+        void CalculateProfileConfidence(ProfileInfo& profile) const;
+
+        // THÊM: Enhanced edge info
+        void EnhanceEdgeInfoWithStraightness();
+
+    private:
+        // Helper methods for profile detection
+        ProfileInfo::ProfileType ClassifyProfileType(const ProfileInfo& profile) const;
+        gp_Vec GetTangentAtParameter(const TopoDS_Edge& edge, double param, bool forward = true) const;
+        bool CheckEdgeConnection(const TopoDS_Edge& edge1, const TopoDS_Edge& edge2,
+            gp_Pnt& connectionPoint, EdgeConnection::ConnectionType& connType,
+            double& tangentAngle, double posTol) const;
     };
-}
+
+} // namespace GeometryKernel

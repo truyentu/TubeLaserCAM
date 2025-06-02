@@ -72,7 +72,11 @@ namespace TubeLaserCAM.UI.ViewModels
         private ObservableCollection<EdgeSelectionInfo> selectedToolpaths;
         private GCodeSettings gcodeSettings = new GCodeSettings();
         private int? hoveredEdgeId;
+        private DateTime lastHoverTime = DateTime.MinValue;
+        private const double HOVER_DEBOUNCE_MS = 5; // 100ms debounce
+        private List<int> hoveredProfileEdges = new List<int>();
         private bool isCameraLocked = false;
+
         private ObservableCollection<ToolpathSuggestion> suggestedToolpaths;
         public ObservableCollection<ToolpathSuggestion> SuggestedToolpaths
         {
@@ -444,32 +448,62 @@ namespace TubeLaserCAM.UI.ViewModels
                 var viewport = FindViewport3D(args.Source);
                 if (viewport == null) return;
 
+                // Debounce hover để tránh flicker
+                if ((DateTime.Now - lastHoverTime).TotalMilliseconds < HOVER_DEBOUNCE_MS)
+                    return;
+
+                lastHoverTime = DateTime.Now;
+
                 var mousePos = args.GetPosition(viewport);
                 var hitResult = GetHitTestResult(viewport, mousePos);
 
                 if (hitResult != null)
                 {
                     var nearestEdgeId = FindEdgeIdFromHitResult(hitResult);
-                    if (hoveredEdgeId != nearestEdgeId)
+
+                    if (nearestEdgeId.HasValue && hoveredEdgeId != nearestEdgeId)
                     {
-                        if (hoveredEdgeId.HasValue)
-                            geometryModel.SetEdgeHovered(hoveredEdgeId.Value, false);
-                        if (nearestEdgeId.HasValue)
-                            geometryModel.SetEdgeHovered(nearestEdgeId.Value, true);
+                        ClearHoveredProfile();
                         hoveredEdgeId = nearestEdgeId;
-                        if (nearestEdgeId.HasValue)
+
+                        // Single edge hover only (disable profile hover for now)
+                        geometryModel.SetEdgeHovered(nearestEdgeId.Value, true);
+                        hoveredProfileEdges.Add(nearestEdgeId.Value);
+
+                        var edgeInfo = geometryModel.GetEdgeInfo(nearestEdgeId.Value);
+                        if (edgeInfo != null)
                         {
-                            var edgeInfo = geometryModel.GetEdgeInfo(nearestEdgeId.Value);
-                            StatusText = $"Hovering Edge #{nearestEdgeId.Value} - Type: {edgeInfo?.EdgeInfo.Type}";
+                            StatusText = $"Hovering Edge #{nearestEdgeId.Value} - Type: {edgeInfo.EdgeInfo.Type}";
                         }
                     }
                 }
-                else if (hoveredEdgeId.HasValue)
+                else
                 {
-                    geometryModel.SetEdgeHovered(hoveredEdgeId.Value, false);
-                    hoveredEdgeId = null;
-                    UpdateStatusText();
+                    // Clear hover only if really moved away
+                    if (hoveredEdgeId.HasValue &&
+                        (DateTime.Now - lastHoverTime).TotalMilliseconds > 200)
+                    {
+                        ClearHoveredProfile();
+                        hoveredEdgeId = null;
+                        UpdateStatusText();
+                    }
                 }
+            }
+        }
+
+        private void ClearHoveredProfile()
+        {
+            // Clear all hovered edges
+            foreach (int id in hoveredProfileEdges)
+            {
+                geometryModel.SetEdgeHovered(id, false);
+            }
+            hoveredProfileEdges.Clear();
+
+            // Also clear single edge if any
+            if (hoveredEdgeId.HasValue)
+            {
+                geometryModel.SetEdgeHovered(hoveredEdgeId.Value, false);
             }
         }
 
@@ -588,180 +622,294 @@ namespace TubeLaserCAM.UI.ViewModels
 
         private void HandleSingleSelection(int edgeId, EdgeSelectionInfo edgeInfo)
         {
-            foreach (var selected in SelectedToolpaths.ToList())
-                geometryModel.SetEdgeSelected(selected.EdgeId, false);
-            SelectedToolpaths.Clear();
-            geometryModel.SetEdgeSelected(edgeId, true);
-            SelectedToolpaths.Add(edgeInfo);
-        }
-
-        private void HandleMultipleSelection(int edgeId, EdgeSelectionInfo edgeInfo)
-        {
-            if (edgeInfo.IsSelected)
-            {
-                geometryModel.SetEdgeSelected(edgeId, false);
-                var toRemove = SelectedToolpaths.FirstOrDefault(e => e.EdgeId == edgeId);
-                if (toRemove != null) SelectedToolpaths.Remove(toRemove);
-            }
-            else
-            {
-                geometryModel.SetEdgeSelected(edgeId, true);
-                SelectedToolpaths.Add(edgeInfo);
-            }
-        }
-
-        private void HandleChainSelection(int startEdgeId, EdgeSelectionInfo startEdge)
-        {
             // Clear previous selection
             foreach (var selected in SelectedToolpaths.ToList())
             {
                 geometryModel.SetEdgeSelected(selected.EdgeId, false);
             }
             SelectedToolpaths.Clear();
-            processedInChain.Clear(); // Clear for new chain operation
 
             try
             {
-                var edgeGroups = geometryModel.GetEdgeGroups();
-                System.Diagnostics.Debug.WriteLine($"Found {edgeGroups.Count} edge groups");
+                // DEBUG: Log edge info
+                System.Diagnostics.Debug.WriteLine($"\n=== SINGLE SELECTION DEBUG ===");
+                System.Diagnostics.Debug.WriteLine($"Clicked edge #{edgeId}, Type: {edgeInfo.EdgeInfo.Type}");
 
-                foreach (var group in edgeGroups)
+                // Get complete profile
+                var profile = geometryModel.GetProfileContainingEdge(edgeId);
+
+                if (profile != null)
                 {
-                    if (group.Contains(startEdgeId))
-                    {
-                        System.Diagnostics.Debug.WriteLine($"Found group containing edge {startEdgeId}");
+                    System.Diagnostics.Debug.WriteLine($"Profile found: Type={profile.ProfileType}, " +
+                        $"Edges={profile.OrderedEdgeIds.Count}, Closed={profile.IsClosed}");
+                    System.Diagnostics.Debug.WriteLine($"Edge IDs in profile: {string.Join(", ", profile.OrderedEdgeIds)}");
 
-                        foreach (var id in group)
+                    // THÊM: Log gap information
+                    if (profile.HasVirtualEdges)
+                    {
+                        System.Diagnostics.Debug.WriteLine($"Profile has gaps: {profile.Gaps.Count} gaps, " +
+                            $"Total gap length: {profile.TotalGapLength:F2}mm");
+                        foreach (var gap in profile.Gaps)
                         {
-                            var info = geometryModel.GetEdgeInfo(id);
-                            if (info != null)
-                            {
-                                geometryModel.SetEdgeSelected(id, true);
-                                SelectedToolpaths.Add(info);
-                            }
+                            System.Diagnostics.Debug.WriteLine($"  Gap: Edge {gap.FromEdgeId} -> {gap.ToEdgeId}, " +
+                                $"Distance: {gap.GapDistance:F2}mm, Method: {gap.SuggestedMethod}");
                         }
-                        return;
                     }
+                }
+                else
+                {
+                    System.Diagnostics.Debug.WriteLine("NO PROFILE DETECTED!");
+                }
+
+                if (profile != null && profile.IsClosed && profile.OrderedEdgeIds.Count > 1)
+                {
+                    // Check if profile has significant gaps that need user confirmation
+                    bool shouldPromptUser = profile.HasVirtualEdges &&
+                                           (profile.TotalGapLength > 2.0 || profile.ProfileConfidence < 0.7);
+
+                    if (shouldPromptUser)
+                    {
+                        // Prompt user to accept profile with gaps
+                        var gapInfo = $"This profile has {profile.Gaps.Count} gap(s) totaling {profile.TotalGapLength:F2}mm.\n" +
+                                     $"Confidence: {profile.ProfileConfidence:P}\n\n" +
+                                     "Do you want to select this profile with virtual edges?";
+
+                        var result = MessageBox.Show(gapInfo, "Profile with Gaps Detected",
+                            MessageBoxButton.YesNo, MessageBoxImage.Question);
+
+                        if (result != MessageBoxResult.Yes)
+                        {
+                            // User rejected - select only the clicked edge
+                            geometryModel.SetEdgeSelected(edgeId, true);
+                            SelectedToolpaths.Add(edgeInfo);
+                            StatusText = "Gap profile rejected - selected single edge only";
+                            return;
+                        }
+                    }
+
+                    // Select all edges in profile
+                    foreach (int profileEdgeId in profile.OrderedEdgeIds)
+                    {
+                        var profileEdgeInfo = geometryModel.GetEdgeInfo(profileEdgeId);
+                        if (profileEdgeInfo != null)
+                        {
+                            geometryModel.SetEdgeSelected(profileEdgeId, true);
+                            SelectedToolpaths.Add(profileEdgeInfo);
+                        }
+                    }
+
+                    // Enhanced status text with gap information
+                    string statusMsg = $"Selected {profile.GetDisplayName()} with {profile.OrderedEdgeIds.Count} edges";
+
+                    if (profile.HasVirtualEdges)
+                    {
+                        statusMsg += $" (Has {profile.Gaps.Count} gap";
+                        if (profile.Gaps.Count > 1) statusMsg += "s";
+                        statusMsg += $", Total: {profile.TotalGapLength:F2}mm";
+
+                        // Add confidence if it's low
+                        if (profile.ProfileConfidence < 0.8)
+                        {
+                            statusMsg += $", Confidence: {profile.ProfileConfidence:P}";
+                        }
+
+                        statusMsg += ")";
+
+                        // Show warning icon for low confidence
+                        if (profile.ProfileConfidence < 0.6)
+                        {
+                            statusMsg += " ⚠️ Low confidence";
+                        }
+                        else if (profile.ProfileConfidence < 0.8)
+                        {
+                            statusMsg += " ⚡ Medium confidence";
+                        }
+
+                        // Add gap closing method info
+                        var methods = profile.Gaps.Select(g => g.SuggestedMethod).Distinct();
+                        if (methods.Count() == 1)
+                        {
+                            statusMsg += $" [{methods.First()}]";
+                        }
+                    }
+
+                    StatusText = statusMsg;
+
+                    // OPTIONAL: Store profile info for later use in G-code generation
+                    if (profile.HasVirtualEdges)
+                    {
+                        // Store virtual edge info in a property or dictionary
+                        // This can be used later when generating toolpaths
+                        StoreVirtualEdgeInfo(profile);
+                    }
+                }
+                else if (profile != null && !profile.IsClosed)
+                {
+                    // Handle open chain with possible gaps
+                    geometryModel.SetEdgeSelected(edgeId, true);
+                    SelectedToolpaths.Add(edgeInfo);
+
+                    string statusMsg = $"Selected open chain starting from edge #{edgeId}";
+                    if (profile.HasVirtualEdges)
+                    {
+                        statusMsg += $" (Has {profile.Gaps.Count} gap";
+                        if (profile.Gaps.Count > 1) statusMsg += "s";
+                        statusMsg += $": {profile.TotalGapLength:F2}mm)";
+                    }
+
+                    StatusText = statusMsg;
+                }
+                else
+                {
+                    // Fallback to single edge selection
+                    geometryModel.SetEdgeSelected(edgeId, true);
+                    SelectedToolpaths.Add(edgeInfo);
+
+                    StatusText = $"Selected single edge: {edgeInfo.EdgeInfo.Type} " +
+                                $"(Profile detection: {(profile == null ? "failed" : "not applicable")})";
                 }
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"Error in GetEdgeGroups: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"ERROR: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine(ex.StackTrace);
+
+                // Fallback
+                geometryModel.SetEdgeSelected(edgeId, true);
+                SelectedToolpaths.Add(edgeInfo);
+                StatusText = "Error detecting profile - selected single edge";
             }
+        }
 
-            List<int> edgesToSelect = new List<int>();
-            const double tangentAngleTolerance = 175.0;
-            
+        // Helper method để lưu virtual edge info (thêm vào MainViewModel)
+        private Dictionary<int, ProfileInfo> profilesWithVirtualEdges = new Dictionary<int, ProfileInfo>();
 
-            // Prioritize selection based on C++ classification
-            if (startEdge.EdgeInfo.Type == GeometryWrapper.ManagedEdgeInfo.EdgeType.Line)
+        private void StoreVirtualEdgeInfo(ProfileInfo profile)
+        {
+            if (profile.HasVirtualEdges && profile.ProfileId >= 0)
             {
-                var allLineLoops = FindAllClosedLineLoops(startEdgeId);
-                List<List<int>> candidateSurfaceLoops = new List<List<int>>();
-
-                if (allLineLoops.Any())
-                {
-                    foreach (var loop in allLineLoops)
-                    {
-                        bool allOnSurface = true;
-                        foreach (var edgeIdInLoop in loop)
-                        {
-                            var edgeInLoopInfo = geometryModel.GetEdgeInfo(edgeIdInLoop);
-                            if (edgeInLoopInfo?.Classification == null || 
-                                edgeInLoopInfo.Classification.Location != Models.EdgeLocation.OnCylinderSurface)
-                            {
-                                allOnSurface = false;
-                                break;
-                            }
-                        }
-                        if (allOnSurface)
-                        {
-                            candidateSurfaceLoops.Add(loop);
-                        }
-                    }
-                }
-
-                if (candidateSurfaceLoops.Any())
-                {
-                    // Select the longest loop among those entirely on the surface
-                    var bestLoop = candidateSurfaceLoops
-                        .OrderByDescending(loop => CalculateLoopTotalLength(loop))
-                        .FirstOrDefault();
-                    if (bestLoop != null) edgesToSelect.AddRange(bestLoop);
-                }
-                else
-                {
-
-                    if (startEdge.Classification.Location == Models.EdgeLocation.OnCylinderSurface)
-                    {
-                        edgesToSelect.Add(startEdgeId);
-                    }
-
-                    else if (!edgesToSelect.Any()) // If nothing selected yet
-                    {
-
-                        var legacyLoops = FindAllClosedLineLoops(startEdgeId)
-                                          .Where(loop => IsLoopApproximatelyOnCylinderSurface(loop, CylinderInfo, 1.0))
-                                          .OrderByDescending(loop => CalculateLoopTotalLength(loop))
-                                          .FirstOrDefault();
-                        if (legacyLoops != null && legacyLoops.Any())
-                        {
-                            edgesToSelect.AddRange(legacyLoops);
-                        }
-                        else
-                        {
-                             edgesToSelect.Add(startEdgeId); // Select just the clicked one
-                        }
-                    }
-                }
+                profilesWithVirtualEdges[profile.ProfileId] = profile;
+                System.Diagnostics.Debug.WriteLine($"Stored virtual edge info for profile {profile.ProfileId}");
             }
-            else // Curves (Circle, BSpline, Bezier, Other)
+        }
+
+        // Method để get virtual edge info khi cần (cho G-code generation)
+        public ProfileInfo GetStoredProfileInfo(int profileId)
+        {
+            return profilesWithVirtualEdges.ContainsKey(profileId) ?
+                   profilesWithVirtualEdges[profileId] : null;
+        }
+
+        private void HandleMultipleSelection(int edgeId, EdgeSelectionInfo edgeInfo)
+        {
+            try
             {
-                if (startEdge.Classification.Location == Models.EdgeLocation.OnCylinderSurface)
+                // Check if edge is part of a profile
+                var profile = geometryModel.GetProfileContainingEdge(edgeId);
+
+                if (profile != null && profile.IsClosed && profile.OrderedEdgeIds.Count > 1)
                 {
-                    var points = startEdge.Points;
-                    if (points != null && points.Count > 1 && ArePointsEqual(points.First(), points.Last(), 0.01))
+                    // Check if any edge of this profile is already selected
+                    bool profileSelected = profile.OrderedEdgeIds.Any(id =>
+                        SelectedToolpaths.Any(s => s.EdgeId == id));
+
+                    if (profileSelected)
                     {
-                        // It's a self-closed curve on the surface, select just itself.
-                        edgesToSelect.Add(startEdgeId);
+                        // Deselect entire profile
+                        foreach (int profileEdgeId in profile.OrderedEdgeIds)
+                        {
+                            geometryModel.SetEdgeSelected(profileEdgeId, false);
+                            var toRemove = SelectedToolpaths.FirstOrDefault(s => s.EdgeId == profileEdgeId);
+                            if (toRemove != null)
+                                SelectedToolpaths.Remove(toRemove);
+                        }
+                        StatusText = $"Deselected {profile.GetDisplayName()}";
                     }
                     else
                     {
-                        // It's an open curve on the surface, find a tangent chain of *other surface curves*.
-                        var tangentChain = BuildChainRecursive(startEdgeId, id => 
-                            FindContinuouslyTangentEdges(id, tangentAngleTolerance)
-                            .Where(connectedId => {
-                                var connectedEdgeInfo = geometryModel.GetEdgeInfo(connectedId);
-                                return connectedEdgeInfo?.Classification?.Location == Models.EdgeLocation.OnCylinderSurface;
-                            }).ToList() 
-                        );
-
-                        if (tangentChain != null && tangentChain.Any())
+                        // Select entire profile
+                        foreach (int profileEdgeId in profile.OrderedEdgeIds)
                         {
-                            edgesToSelect.AddRange(tangentChain);
+                            var profileEdgeInfo = geometryModel.GetEdgeInfo(profileEdgeId);
+                            if (profileEdgeInfo != null && !profileEdgeInfo.IsSelected)
+                            {
+                                geometryModel.SetEdgeSelected(profileEdgeId, true);
+                                SelectedToolpaths.Add(profileEdgeInfo);
+                            }
                         }
-                        else // Should include at least startEdgeId if it's on surface
-                        {
-                            edgesToSelect.Add(startEdgeId);
-                        }
+                        StatusText = $"Added {profile.GetDisplayName()} to selection";
                     }
                 }
                 else
                 {
-                    // Clicked curve is not on the surface, select only the clicked curve.
-                    edgesToSelect.Add(startEdgeId);
+                    // Handle single edge toggle
+                    if (edgeInfo.IsSelected)
+                    {
+                        geometryModel.SetEdgeSelected(edgeId, false);
+                        var toRemove = SelectedToolpaths.FirstOrDefault(e => e.EdgeId == edgeId);
+                        if (toRemove != null) SelectedToolpaths.Remove(toRemove);
+                    }
+                    else
+                    {
+                        geometryModel.SetEdgeSelected(edgeId, true);
+                        SelectedToolpaths.Add(edgeInfo);
+                    }
+                }
+
+                UpdateStatusText();
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error in HandleMultipleSelection: {ex.Message}");
+                // Fallback to simple toggle
+                if (edgeInfo.IsSelected)
+                {
+                    geometryModel.SetEdgeSelected(edgeId, false);
+                    var toRemove = SelectedToolpaths.FirstOrDefault(e => e.EdgeId == edgeId);
+                    if (toRemove != null) SelectedToolpaths.Remove(toRemove);
+                }
+                else
+                {
+                    geometryModel.SetEdgeSelected(edgeId, true);
+                    SelectedToolpaths.Add(edgeInfo);
                 }
             }
-            
-            // Add selected edges to the toolpath list
-            foreach (var edgeId_toSelect in edgesToSelect.Distinct()) // Ensure distinct before adding
+        }
+
+        private void HandleChainSelection(int startEdgeId, EdgeSelectionInfo startEdge)
+        {
+            ExecuteClearSelection(null);
+
+            try
             {
-                var edgeInfoToSelect = geometryModel.GetEdgeInfo(edgeId_toSelect);
-                if (edgeInfoToSelect != null)
+                // Dùng DetectAllProfiles (chính xác nhất)
+                var allProfiles = geometryModel.DetectAllProfiles();
+
+                if (allProfiles != null && allProfiles.Count > 0)
                 {
-                    geometryModel.SetEdgeSelected(edgeId_toSelect, true);
-                    SelectedToolpaths.Add(edgeInfoToSelect);
+                    // Chỉ chọn CLOSED profiles (bỏ qua open chains)
+                    var closedProfiles = allProfiles.Where(p => p.IsClosed).ToList();
+
+                    foreach (var profile in closedProfiles)
+                    {
+                        // Select tất cả edges trong profile
+                        foreach (int edgeId in profile.OrderedEdgeIds)
+                        {
+                            var edgeInfo = geometryModel.GetEdgeInfo(edgeId);
+                            if (edgeInfo != null)
+                            {
+                                geometryModel.SetEdgeSelected(edgeId, true);
+                                SelectedToolpaths.Add(edgeInfo);
+                            }
+                        }
+                    }
+
+                    StatusText = $"Selected {closedProfiles.Count} closed profiles";
                 }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error: {ex.Message}");
             }
         }
 
@@ -1285,12 +1433,36 @@ namespace TubeLaserCAM.UI.ViewModels
         private void UpdateStatusText()
         {
             var count = SelectedToolpaths.Count;
+
+            // Count profiles vs individual edges
+            var profileGroups = SelectedToolpaths
+                .GroupBy(e => {
+                    var profile = geometryModel.GetProfileContainingEdge(e.EdgeId);
+                    return profile?.ProfileId ?? e.EdgeId;
+                })
+                .ToList();
+
             if (count == 0)
-                StatusText = "No edges selected.";
-            else if (count == 1)
-                StatusText = $"1 edge selected. Type: {SelectedToolpaths[0].EdgeInfo.Type}";
+            {
+                StatusText = "No edges selected. Hover to preview profiles.";
+            }
+            else if (profileGroups.Count == 1 && count > 1)
+            {
+                var firstEdge = SelectedToolpaths[0];
+                var profile = geometryModel.GetProfileContainingEdge(firstEdge.EdgeId);
+                if (profile != null)
+                {
+                    StatusText = $"Selected {profile.GetDisplayName()} - {count} edges, {profile.TotalLength:F2}mm";
+                }
+                else
+                {
+                    StatusText = $"{count} edges selected.";
+                }
+            }
             else
-                StatusText = $"{count} edges selected.";
+            {
+                StatusText = $"{count} edges selected in {profileGroups.Count} profiles/groups.";
+            }
         }
 
         private void ExecuteApplyFilter(object parameter)

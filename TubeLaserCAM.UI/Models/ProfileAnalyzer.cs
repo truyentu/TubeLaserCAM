@@ -24,6 +24,25 @@ namespace TubeLaserCAM.UI.Models
         /// <summary>
         /// Node trong edge graph
         /// </summary>
+        /// 
+
+        public class VirtualEdge
+        {
+            public string Type { get; set; } // "LINE", "ARC"
+            public Point3D StartPoint { get; set; }
+            public Point3D EndPoint { get; set; }
+            public double Confidence { get; set; }
+            public string Reason { get; set; } // "GAP_CLOSING", "MISSING_PATTERN"
+            public double Length { get; set; }
+
+            public VirtualEdge()
+            {
+                Type = "LINE";
+                Confidence = 1.0;
+                Reason = "GAP_CLOSING";
+            }
+        }
+
         public class EdgeNode
         {
             public int EdgeId { get; set; }
@@ -82,6 +101,11 @@ namespace TubeLaserCAM.UI.Models
             public Point3D OptimalStartPoint { get; set; }
             public CuttingDirection PreferredDirection { get; set; }
             public int CuttingOrder { get; set; } // Thứ tự cắt (0 = first)
+            public double TotalGapLength { get; set; }
+            public int NumGaps { get; set; }
+            public List<VirtualEdge> VirtualEdges { get; set; } = new List<VirtualEdge>();
+            public double Confidence { get; set; } = 1.0;
+            public bool IsCompleteWithGaps { get; set; }
         }
 
         /// <summary>

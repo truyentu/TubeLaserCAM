@@ -5,6 +5,7 @@ using System.Windows.Media.Media3D;
 using GeometryWrapper;
 using System.Linq;
 using HelixToolkit.Wpf;
+using static TubeLaserCAM.UI.Models.ProfileInfo;
 
 namespace TubeLaserCAM.UI.Models
 {
@@ -36,6 +37,8 @@ namespace TubeLaserCAM.UI.Models
         private Dictionary<int, EdgeSelectionInfo> edgeSelectionMap;
         private Dictionary<int, EdgeClassificationData> edgeClassifications;
         private List<int> selectedEdgeIds;
+        private Dictionary<int, ProfileInfo> profileCache = new Dictionary<int, ProfileInfo>();
+        private bool profileCacheValid = false;
         private Transform3D cylinderToYTransform = Transform3D.Identity;
 
 
@@ -53,7 +56,18 @@ namespace TubeLaserCAM.UI.Models
 
         public bool LoadStepFile(string filePath)
         {
-            return stepReader.LoadFile(filePath);
+            var result = stepReader.LoadFile(filePath);
+
+            if (result)
+            {
+                // Clear all caches when loading new file
+                ClearAllCaches();
+
+                // Optionally build profile cache immediately
+                // BuildProfileCache(); // Uncomment if you want to pre-build cache
+            }
+
+            return result;
         }
 
         public int GetEdgeCount()
@@ -950,17 +964,29 @@ namespace TubeLaserCAM.UI.Models
         {
             if (!edgeSelectionMap.ContainsKey(edgeId)) return;
 
-            var edgeSelection = edgeSelectionMap[edgeId]; // Renamed for clarity
+            var edgeSelection = edgeSelectionMap[edgeId];
             Material newMaterial;
 
             if (edgeSelection.IsSelected)
                 newMaterial = new DiffuseMaterial(new SolidColorBrush(Colors.Green));
             else if (edgeSelection.IsHovered)
-                newMaterial = new DiffuseMaterial(new SolidColorBrush(Colors.Yellow));
+            {
+                // Check if part of a profile hover
+                var profile = GetProfileContainingEdge(edgeId);
+                if (profile != null && profile.IsClosed && profile.OrderedEdgeIds.Count > 1)
+                {
+                    // Use different color for profile hover
+                    newMaterial = new DiffuseMaterial(new SolidColorBrush(Colors.Orange));
+                }
+                else
+                {
+                    // Single edge hover
+                    newMaterial = new DiffuseMaterial(new SolidColorBrush(Colors.Yellow));
+                }
+            }
             else
                 newMaterial = edgeSelection.OriginalMaterial;
 
-            // edgeSelection.Model3D is the GeometryModel3D whose material needs to change.
             if (edgeSelection.Model3D != null)
             {
                 edgeSelection.Model3D.Material = newMaterial;
@@ -1013,6 +1039,197 @@ namespace TubeLaserCAM.UI.Models
         public Dictionary<int, EdgeSelectionInfo> GetAllEdgeInfos()
         {
             return new Dictionary<int, EdgeSelectionInfo>(edgeSelectionMap);
+        }
+
+        public ProfileInfo GetProfileContainingEdge(int edgeId)
+        {
+            try
+            {
+                // 1. Check cache first
+                if (profileCacheValid)
+                {
+                    foreach (var profile in profileCache.Values)
+                    {
+                        if (profile.ContainsEdge(edgeId))
+                        {
+                            System.Diagnostics.Debug.WriteLine($"Found edge {edgeId} in cached profile {profile.ProfileId}");
+                            return profile;
+                        }
+                    }
+                    // Not in any profile
+                    return null;
+                }
+
+                // 2. If cache invalid, detect profile for this edge
+                if (stepReader == null)
+                {
+                    System.Diagnostics.Debug.WriteLine("StepReader is null");
+                    return null;
+                }
+
+                var managedProfile = stepReader.DetectCompleteProfile(edgeId);
+
+                // 3. Check if valid profile found
+                if (!managedProfile.IsValid || managedProfile.OrderedEdgeIds == null ||
+                    managedProfile.OrderedEdgeIds.Length == 0)
+                {
+                    System.Diagnostics.Debug.WriteLine($"No valid profile found for edge {edgeId}");
+                    return null;
+                }
+
+                // 4. Convert ManagedProfileInfo to ProfileInfo with gap information
+                var detectedProfile = new ProfileInfo
+                {
+                    ProfileId = edgeId, // Use starting edge as profile ID
+                    OrderedEdgeIds = new List<int>(managedProfile.OrderedEdgeIds),
+                    IsClosed = managedProfile.IsClosed,
+                    ProfileType = managedProfile.ProfileType,
+                    TotalLength = managedProfile.TotalLength,
+
+                    // THÊM: Gap-related properties
+                    TotalGapLength = managedProfile.TotalGapLength,
+                    ProfileConfidence = managedProfile.ProfileConfidence,
+                    HasVirtualEdges = managedProfile.HasVirtualEdges
+                };
+
+                // Convert gaps if present
+                if (managedProfile.Gaps != null && managedProfile.Gaps.Length > 0)
+                {
+                    foreach (var gap in managedProfile.Gaps)
+                    {
+                        detectedProfile.Gaps.Add(new GapInfo
+                        {
+                            FromEdgeId = gap.FromEdgeId,
+                            ToEdgeId = gap.ToEdgeId,
+                            GapDistance = gap.GapDistance,
+                            SuggestedMethod = gap.SuggestedMethod,
+                            Confidence = gap.Confidence
+                        });
+                    }
+                }
+
+                // 5. Update cache for all edges in this profile
+                foreach (int id in detectedProfile.OrderedEdgeIds)
+                {
+                    profileCache[id] = detectedProfile;
+                }
+
+                // Enhanced debug output with gap information
+                System.Diagnostics.Debug.WriteLine(
+                    $"Detected {detectedProfile.ProfileType} profile with {detectedProfile.OrderedEdgeIds.Count} edges, " +
+                    $"Total length: {detectedProfile.TotalLength:F2}mm");
+
+                if (detectedProfile.HasVirtualEdges)
+                {
+                    System.Diagnostics.Debug.WriteLine(
+                        $"  Profile has {detectedProfile.Gaps.Count} gaps, " +
+                        $"Total gap length: {detectedProfile.TotalGapLength:F2}mm, " +
+                        $"Confidence: {detectedProfile.ProfileConfidence:P}");
+                }
+
+                return detectedProfile;
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error in GetProfileContainingEdge: {ex.Message}");
+                return null;
+            }
+        }
+
+
+        private void InvalidateProfileCache()
+        {
+            profileCache.Clear();
+            profileCacheValid = false;
+            System.Diagnostics.Debug.WriteLine("Profile cache invalidated");
+        }
+
+        // Call this when loading new file
+        public void ClearAllCaches()
+        {
+            InvalidateProfileCache();
+            edgeSelectionMap.Clear();
+            edgeClassifications.Clear();
+            selectedEdgeIds.Clear();
+        }
+
+        // Bulk detection for performance
+        public void BuildProfileCache()
+        {
+            try
+            {
+                if (stepReader == null)
+                {
+                    System.Diagnostics.Debug.WriteLine("Cannot build profile cache: StepReader is null");
+                    return;
+                }
+
+                System.Diagnostics.Debug.WriteLine("Building profile cache...");
+
+                // Clear existing cache
+                profileCache.Clear();
+
+                // Call DetectAllProfiles() once
+                var allProfiles = stepReader.DetectAllProfiles();
+
+                if (allProfiles == null)
+                {
+                    System.Diagnostics.Debug.WriteLine("DetectAllProfiles returned null");
+                    profileCacheValid = false;
+                    return;
+                }
+
+                System.Diagnostics.Debug.WriteLine($"Found {allProfiles.Count} profiles");
+
+                // Populate cache with all profiles
+                int profileIdCounter = 0;
+                foreach (var managedProfile in allProfiles)
+                {
+                    if (managedProfile.IsValid && managedProfile.OrderedEdgeIds != null)
+                    {
+                        var profile = new ProfileInfo
+                        {
+                            ProfileId = profileIdCounter++,
+                            OrderedEdgeIds = new List<int>(managedProfile.OrderedEdgeIds),
+                            IsClosed = managedProfile.IsClosed,
+                            ProfileType = managedProfile.ProfileType,
+                            TotalLength = managedProfile.TotalLength
+                        };
+
+                        // Add to cache for each edge in profile
+                        foreach (int edgeId in profile.OrderedEdgeIds)
+                        {
+                            profileCache[edgeId] = profile;
+                        }
+
+                        System.Diagnostics.Debug.WriteLine(
+                            $"  Profile {profile.ProfileId}: {profile.ProfileType} with " +
+                            $"{profile.OrderedEdgeIds.Count} edges");
+                    }
+                }
+
+                profileCacheValid = true;
+                System.Diagnostics.Debug.WriteLine($"Profile cache built with {profileCache.Count} edge mappings");
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error building profile cache: {ex.Message}");
+                profileCacheValid = false;
+            }
+        }
+
+        // Method to detect all profiles (wrapper)
+        public List<ProfileInfo> DetectAllProfiles()
+        {
+            BuildProfileCache();
+
+            // Return unique profiles
+            var uniqueProfiles = profileCache.Values
+                .GroupBy(p => p.ProfileId)
+                .Select(g => g.First())
+                .ToList();
+
+            return uniqueProfiles;
         }
 
         public List<ToolpathSuggestion> GetToolpathSuggestions()
@@ -1374,5 +1591,101 @@ namespace TubeLaserCAM.UI.Models
 
             return unrolledToolpaths;
         }
+        public List<ProfileAnalyzer.CuttingProfile> AnalyzeUnrolledProfiles(
+            List<UnrolledToolpath> unrolledToolpaths)
+        {
+            var analyzer = new ProfileAnalyzer();
+
+            // Analyze với gap closing
+            var settings = new CuttingDirectionSettings
+            {
+                ProfileConnectionTolerance = 0.5,  // 0.5mm gap tolerance
+                CompleteProfileBeforeMoving = true,
+                YDirection = CuttingDirectionSettings.YDirectionPreference.Auto,
+                OptimizeStartPoint = true,
+                UseLeadInOut = true,
+                LeadInLength = 2.0,
+                LeadOutLength = 2.0
+            };
+
+            var profiles = analyzer.AnalyzeProfiles(unrolledToolpaths, settings);
+
+            // Handle virtual edges cho gaps
+            foreach (var profile in profiles)
+            {
+                if (profile.TotalGapLength > 0)
+                {
+                    System.Diagnostics.Debug.WriteLine(
+                        $"Profile {profile.ProfileId} has gaps: " +
+                        $"{profile.NumGaps} gaps, {profile.TotalGapLength:F2}mm total");
+
+                    // Log chi tiết từng virtual edge nếu cần
+                    foreach (var virtualEdge in profile.VirtualEdges)
+                    {
+                        System.Diagnostics.Debug.WriteLine(
+                            $"  Virtual edge: {virtualEdge.Type} from " +
+                            $"({virtualEdge.StartPoint.X:F2}, {virtualEdge.StartPoint.Y:F2}) to " +
+                            $"({virtualEdge.EndPoint.X:F2}, {virtualEdge.EndPoint.Y:F2}), " +
+                            $"Confidence: {virtualEdge.Confidence:P}");
+                    }
+                }
+            }
+
+            System.Diagnostics.Debug.WriteLine(
+                $"Analyzed {unrolledToolpaths.Count} toolpaths into {profiles.Count} profiles");
+
+            return profiles;
+        }
+
     }
+
+    public class ProfileInfo
+    {
+        public List<int> OrderedEdgeIds { get; set; }
+        public bool IsClosed { get; set; }
+        public string ProfileType { get; set; }
+        public double TotalLength { get; set; }
+        public int ProfileId { get; set; }
+        public List<GapInfo> Gaps { get; set; } = new List<GapInfo>();
+        public double TotalGapLength { get; set; }
+        public double ProfileConfidence { get; set; } = 1.0;
+        public bool HasVirtualEdges { get; set; }
+        public bool NeedsGapClosing => Gaps != null && Gaps.Count > 0;
+
+        public ProfileInfo()
+        {
+            OrderedEdgeIds = new List<int>();
+            IsClosed = false;
+            ProfileType = "UNKNOWN";
+            TotalLength = 0.0;
+            ProfileId = -1;
+        }
+        public class GapInfo
+        {
+            public int FromEdgeId { get; set; }
+            public int ToEdgeId { get; set; }
+            public double GapDistance { get; set; }
+            public string SuggestedMethod { get; set; }
+            public double Confidence { get; set; }
+        }
+
+        // Helper method
+        public bool ContainsEdge(int edgeId)
+        {
+            return OrderedEdgeIds != null && OrderedEdgeIds.Contains(edgeId);
+        }
+
+        // Helper to get display name
+        public string GetDisplayName()
+        {
+            if (ProfileType == "CIRCLE") return "Circle";
+            if (ProfileType == "RECTANGLE") return "Rectangle";
+            if (ProfileType == "SLOT") return "Slot";
+            if (ProfileType == "POLYGON") return $"Polygon ({OrderedEdgeIds.Count} sides)";
+            if (ProfileType == "COMPLEX_CLOSED") return "Complex Shape";
+            if (ProfileType == "OPEN_CHAIN") return "Open Chain";
+            return "Unknown";
+        }
+    }
+
 }

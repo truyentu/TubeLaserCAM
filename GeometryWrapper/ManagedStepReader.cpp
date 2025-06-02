@@ -1,10 +1,28 @@
 ﻿#include "stdafx.h"
-#include "ManagedStepReader.h"
+#pragma warning(push)
+#pragma warning(disable: 4635) // XML documentation comments
+#pragma warning(disable: 4638) // XML documentation comments
+
+#pragma managed(push, off)
+#include <exception>
+#pragma managed(pop)
+// Push to unmanaged for STL/Native headers
+#pragma managed(push, off)
+#include "../GeometryKernel/GeometryTypes.h"  // Include TRƯỚC
 #include "../GeometryKernel/StepReader.h"
+#include <set>
+#include <vector>
+#include <map>
+#pragma managed(pop)
+
+// Managed headers
+#include "ManagedStepReader.h"
 #include <msclr/marshal_cppstd.h>
 
 using namespace GeometryWrapper;
 using namespace System::Runtime::InteropServices;
+
+
 
 // Helper to convert native EdgeClassification::Location to managed
 ManagedEdgeClassification::Location ConvertLocation(GeometryKernel::EdgeClassification::Location nativeLoc) {
@@ -296,3 +314,226 @@ ManagedCylinderInfo ManagedStepReader::DetectMainCylinder() {
 
     return managedInfo;
 }
+
+String^ ManagedStepReader::ConvertProfileTypeToString(int typeValue) {
+    // Dùng integer values thay vì enum
+    switch (typeValue) {
+    case 0:  // UNKNOWN
+        return "UNKNOWN";
+    case 1:  // SINGLE_CIRCLE
+        return "CIRCLE";
+    case 2:  // RECTANGLE
+        return "RECTANGLE";
+    case 3:  // SLOT
+        return "SLOT";
+    case 4:  // POLYGON
+        return "POLYGON";
+    case 5:  // COMPLEX_CLOSED
+        return "COMPLEX_CLOSED";
+    case 6:  // OPEN_CHAIN
+        return "OPEN_CHAIN";
+    default:
+        return "UNKNOWN";
+    }
+}
+
+// Detect complete profile from a starting edge
+ManagedProfileInfo ManagedStepReader::DetectCompleteProfile(int edgeId) {
+    // Initialize with invalid profile
+    ManagedProfileInfo managedProfile(false);
+
+    // Check if native reader exists
+    if (m_pNativeReader == nullptr) {
+        System::Diagnostics::Debug::WriteLine("Native reader is null");
+        return managedProfile;
+    }
+
+    try {
+        // Call native method
+        auto nativeProfile = m_pNativeReader->DetectCompleteProfile(edgeId);
+
+        // Check if profile is valid
+        if (!nativeProfile.isValid) {
+            System::Diagnostics::Debug::WriteLine(
+                String::Format("No valid profile found for edge {0}", edgeId));
+            return managedProfile;
+        }
+
+        // Convert basic profile information
+        managedProfile.IsValid = nativeProfile.isValid;
+        managedProfile.IsClosed = nativeProfile.isClosed;
+        managedProfile.TotalLength = nativeProfile.totalLength;
+        managedProfile.EdgeCount = static_cast<int>(nativeProfile.orderedEdgeIds.size());
+
+        // THÊM: Convert gap-related information
+        managedProfile.TotalGapLength = nativeProfile.totalGapLength;
+        managedProfile.ProfileConfidence = nativeProfile.profileConfidence;
+        managedProfile.HasVirtualEdges = nativeProfile.hasVirtualEdges;
+
+        // Convert profile type
+        managedProfile.ProfileType = ConvertProfileTypeToString(
+            static_cast<int>(nativeProfile.profileType));
+
+        // Convert edge IDs vector to managed array
+        if (nativeProfile.orderedEdgeIds.size() > 0) {
+            managedProfile.OrderedEdgeIds =
+                gcnew array<int>(static_cast<int>(nativeProfile.orderedEdgeIds.size()));
+
+            for (size_t i = 0; i < nativeProfile.orderedEdgeIds.size(); i++) {
+                managedProfile.OrderedEdgeIds[i] = nativeProfile.orderedEdgeIds[i];
+            }
+        }
+        else {
+            managedProfile.OrderedEdgeIds = gcnew array<int>(0);
+        }
+
+        // THÊM: Convert gaps array if present
+        if (nativeProfile.gaps.size() > 0) {
+            managedProfile.Gaps = gcnew array<ManagedGapInfo>(
+                static_cast<int>(nativeProfile.gaps.size()));
+
+            for (size_t i = 0; i < nativeProfile.gaps.size(); i++) {
+                ManagedGapInfo managedGap;
+                managedGap.FromEdgeId = nativeProfile.gaps[i].fromEdgeId;
+                managedGap.ToEdgeId = nativeProfile.gaps[i].toEdgeId;
+                managedGap.GapDistance = nativeProfile.gaps[i].gapDistance;
+                managedGap.Confidence = nativeProfile.gaps[i].confidence;
+
+                // Convert gap closing method enum to string
+                switch (nativeProfile.gaps[i].suggestedMethod) {
+                case GeometryKernel::GapInfo::GapClosingMethod::VIRTUAL_LINE:  // Thêm GapClosingMethod::
+                    managedGap.SuggestedMethod = "LINE";
+                    break;
+                case GeometryKernel::GapInfo::GapClosingMethod::VIRTUAL_ARC:   // Thêm GapClosingMethod::
+                    managedGap.SuggestedMethod = "ARC";
+                    break;
+                case GeometryKernel::GapInfo::GapClosingMethod::EXTEND_EDGES:  // Thêm GapClosingMethod::
+                    managedGap.SuggestedMethod = "EXTEND";
+                    break;
+                default:
+                    managedGap.SuggestedMethod = "NONE";
+                    break;
+                }
+
+                managedProfile.Gaps[i] = managedGap;
+            }
+        }
+        else {
+            // Initialize empty gaps array
+            managedProfile.Gaps = gcnew array<ManagedGapInfo>(0);
+        }
+
+        // Enhanced debug output with gap information
+        System::Diagnostics::Debug::WriteLine(
+            String::Format("Profile detected: Type={0}, Edges={1}, Closed={2}, Length={3:F2}mm",
+                managedProfile.ProfileType,
+                managedProfile.EdgeCount,
+                managedProfile.IsClosed,
+                managedProfile.TotalLength));
+
+        // THÊM: Debug output for gaps
+        if (managedProfile.Gaps != nullptr && managedProfile.Gaps->Length > 0) {
+            System::Diagnostics::Debug::WriteLine(
+                String::Format("  Gaps: {0}, Total gap length: {1:F2}mm, Confidence: {2:F2}%",
+                    managedProfile.Gaps->Length,
+                    managedProfile.TotalGapLength,
+                    managedProfile.ProfileConfidence * 100));
+
+            // Log individual gaps for debugging
+            for (int i = 0; i < managedProfile.Gaps->Length; i++) {
+                System::Diagnostics::Debug::WriteLine(
+                    String::Format("    Gap {0}: Edge {1} -> {2}, Distance: {3:F2}mm, Method: {4}",
+                        i + 1,
+                        managedProfile.Gaps[i].FromEdgeId,
+                        managedProfile.Gaps[i].ToEdgeId,
+                        managedProfile.Gaps[i].GapDistance,
+                        managedProfile.Gaps[i].SuggestedMethod));
+            }
+        }
+
+        // THÊM: Warning if profile has virtual edges
+        if (managedProfile.HasVirtualEdges) {
+            System::Diagnostics::Debug::WriteLine(
+                "  Warning: Profile requires virtual edges for gap closing");
+        }
+
+    }
+    catch (const std::exception& e) {
+        System::String^ errorMsg = gcnew System::String(e.what());
+        System::Diagnostics::Debug::WriteLine(
+            String::Format("Native error in DetectCompleteProfile: {0}", errorMsg));
+        managedProfile.IsValid = false;
+    }
+    catch (System::Exception^ e) {
+        System::Diagnostics::Debug::WriteLine(
+            "Managed error in DetectCompleteProfile: " + e->Message);
+        managedProfile.IsValid = false;
+    }
+
+    return managedProfile;
+}
+
+// Detect all profiles in the model
+List<ManagedProfileInfo>^ ManagedStepReader::DetectAllProfiles() {
+    List<ManagedProfileInfo>^ managedProfiles = gcnew List<ManagedProfileInfo>();
+
+    if (m_pNativeReader == nullptr) {
+        System::Diagnostics::Debug::WriteLine("Native reader is null in DetectAllProfiles");
+        return managedProfiles;
+    }
+
+    try {
+        // Get all edges first
+        std::vector<GeometryKernel::EdgeInfo> edges = m_pNativeReader->GetEdgeInfoList();
+        std::set<int> processedEdges;
+
+        // Process each edge
+        for (const auto& edge : edges) {
+            // Skip if already processed
+            if (processedEdges.find(edge.id) != processedEdges.end()) {
+                continue;
+            }
+
+            // Try to detect profile from this edge
+            auto nativeProfile =
+
+                m_pNativeReader->DetectCompleteProfile(edge.id);
+
+            if (nativeProfile.isValid && nativeProfile.orderedEdgeIds.size() > 0) {
+                // Convert to managed
+                ManagedProfileInfo managedProfile(true);
+                managedProfile.IsClosed = nativeProfile.isClosed;
+                managedProfile.TotalLength = nativeProfile.totalLength;
+                managedProfile.EdgeCount = static_cast<int>(nativeProfile.orderedEdgeIds.size());
+                managedProfile.ProfileType = ConvertProfileTypeToString(
+                    static_cast<int>(nativeProfile.profileType));
+
+                // Convert edge IDs
+                managedProfile.OrderedEdgeIds =
+                    gcnew array<int>(static_cast<int>(nativeProfile.orderedEdgeIds.size()));
+
+                for (size_t i = 0; i < nativeProfile.orderedEdgeIds.size(); i++) {
+                    managedProfile.OrderedEdgeIds[i] = nativeProfile.orderedEdgeIds[i];
+                    processedEdges.insert(nativeProfile.orderedEdgeIds[i]);
+                }
+
+                // Add to list
+                managedProfiles->Add(managedProfile);
+            }
+        }
+
+        System::Diagnostics::Debug::WriteLine(
+            String::Format("Detected {0} profiles total", managedProfiles->Count));
+
+    }
+    catch (const std::exception& e) {
+        System::Diagnostics::Debug::WriteLine("Native error in DetectAllProfiles");
+    }
+    catch (System::Exception^ e) {
+        System::Diagnostics::Debug::WriteLine("Managed error in DetectAllProfiles: " + e->Message);
+    }
+
+    return managedProfiles;
+}
+
+

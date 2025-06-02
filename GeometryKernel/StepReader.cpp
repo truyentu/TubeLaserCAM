@@ -29,6 +29,7 @@
 // Additional includes needed
 #include <set>
 #include <stack>
+#include <queue>
 #include <algorithm>
 #include <sstream>
 #include <iomanip>
@@ -874,45 +875,101 @@ namespace GeometryKernel {
     }
 
     bool StepReader::IsBSplineStraight(const TopoDS_Edge& edge, double tolerance) const {
+        BSplineStraightInfo info;
+        return IsBSplineStraightDetailed(edge, tolerance, info);
+    }
+    bool StepReader::IsBSplineStraightDetailed(const TopoDS_Edge& edge,
+        double tolerance,
+        BSplineStraightInfo& info) const {
         Standard_Real first, last;
         Handle(Geom_Curve) curve = BRep_Tool::Curve(edge, first, last);
 
-        if (curve.IsNull() || !curve->IsKind(STANDARD_TYPE(Geom_BSplineCurve)))
+        if (curve.IsNull() || !curve->IsKind(STANDARD_TYPE(Geom_BSplineCurve))) {
+            info.reason = "Not a BSpline curve";
             return false;
-
-        // Sample points dọc theo BSpline
-        const int numSamples = 10;
-        std::vector<gp_Pnt> points;
-
-        for (int i = 0; i <= numSamples; i++) {
-            double param = first + (last - first) * i / numSamples;
-            points.push_back(curve->Value(param));
         }
 
-        // Kiểm tra tất cả points có nằm trên đường thẳng không
-        if (points.size() < 3) return false;
+        Handle(Geom_BSplineCurve) bspline = Handle(Geom_BSplineCurve)::DownCast(curve);
 
-        gp_Vec v1(points[0], points[1]);
-        if (v1.Magnitude() < Precision::Confusion()) return false;
-        v1.Normalize();
-
-        for (size_t i = 2; i < points.size(); i++) {
-            gp_Vec vi(points[0], points[i]);
-            if (vi.Magnitude() < Precision::Confusion()) continue;
-
-            double cross = v1.Crossed(vi).Magnitude();
-            double dist = cross / vi.Magnitude();
-
-            if (dist > tolerance) return false;
+        // 1. Check control points collinearity
+        int numPoles = bspline->NbPoles();
+        std::vector<gp_Pnt> poles;
+        for (int i = 1; i <= numPoles; i++) {
+            poles.push_back(bspline->Pole(i));
         }
-        gp_Pnt p1 = curve->Value(first);
-        gp_Pnt p2 = curve->Value(last);
-        std::cout << "  Start: (" << p1.X() << ", " << p1.Y() << ", " << p1.Z() << ")"
-            << " End: (" << p2.X() << ", " << p2.Y() << ", " << p2.Z() << ")"
-            << " Length: " << p1.Distance(p2) << std::endl;
+
+        // Compute best-fit line through control points
+        gp_Pnt startPt = bspline->Value(first);
+        gp_Pnt endPt = bspline->Value(last);
+        gp_Vec lineVec(startPt, endPt);
+        gp_Lin referenceLine(startPt, gp_Dir(lineVec));
+
+        double maxControlDeviation = 0.0;
+        for (const auto& pole : poles) {
+            double dist = referenceLine.Distance(pole);
+            maxControlDeviation = std::max(maxControlDeviation, dist);
+        }
+
+        if (maxControlDeviation > tolerance * 5) {  // Loose check for control points
+            info.reason = "Control points not collinear";
+            info.maxDeviation = maxControlDeviation;
+            return false;
+        }
+
+        // 2. Check curvature
+        const int CURVATURE_SAMPLES = 20;
+        double maxCurvature = 0.0;
+
+        for (int i = 0; i <= CURVATURE_SAMPLES; i++) {
+            double param = first + (last - first) * i / CURVATURE_SAMPLES;
+            gp_Pnt pt;
+            gp_Vec d1, d2;
+            bspline->D2(param, pt, d1, d2);
+
+            double d1Mag = d1.Magnitude();
+            if (d1Mag > Precision::Confusion()) {
+                double curvature = d1.Crossed(d2).Magnitude() / pow(d1Mag, 3);
+                maxCurvature = std::max(maxCurvature, curvature);
+            }
+        }
+
+        const double MAX_CURVATURE = 0.001;
+        if (maxCurvature > MAX_CURVATURE) {
+            info.reason = "Curvature too high";
+            info.maxCurvature = maxCurvature;
+            return false;
+        }
+
+        // 3. Sample point deviation
+        const int NUM_SAMPLES = 50;
+        double maxSampleDeviation = 0.0;
+
+        for (int i = 0; i <= NUM_SAMPLES; i++) {
+            double param = first + (last - first) * i / NUM_SAMPLES;
+            gp_Pnt pt = bspline->Value(param);
+            double dist = referenceLine.Distance(pt);
+            maxSampleDeviation = std::max(maxSampleDeviation, dist);
+        }
+
+        if (maxSampleDeviation > tolerance) {
+            info.reason = "Sample points deviate";
+            info.maxDeviation = maxSampleDeviation;
+            return false;
+        }
+
+        // Fill success info
+        info.isStaight = true;
+        info.startPoint = startPt;
+        info.endPoint = endPt;
+        info.direction = gp_Dir(lineVec);
+        info.length = startPt.Distance(endPt);
+        info.maxDeviation = maxSampleDeviation;
+        info.maxCurvature = maxCurvature;
+        info.straightnessScore = 1.0 - (maxSampleDeviation / tolerance);
 
         return true;
     }
+
 
     bool StepReader::GetBSplineDirection(const TopoDS_Edge& edge, gp_Dir& direction) const {
         Standard_Real first, last;
@@ -1612,6 +1669,489 @@ namespace GeometryKernel {
 
         return mainCylinder;
     }
+
+    // Main profile detection method
+    ProfileInfo StepReader::DetectCompleteProfile(int startEdgeId) const {
+        ProfileInfo profile;
+        profile.profileId = startEdgeId;
+
+        try {
+            // Get all edges với enhanced gap tolerance
+            std::vector<int> allEdgeIds;
+            for (const auto& kvp : m_topoEdgeMap) {
+                allEdgeIds.push_back(kvp.first);
+            }
+
+            // Find connections với multiple tolerance levels
+            auto connections = FindEdgeConnectionsWithGaps(allEdgeIds);
+
+            // Build profile với gap handling
+            profile = BuildProfileWithGaps(startEdgeId, connections);
+
+            // Classify profile type
+            profile.profileType = ClassifyProfileType(profile);
+
+            // Calculate confidence dựa trên gaps
+            CalculateProfileConfidence(profile);
+
+            profile.isValid = true;
+
+            std::cout << "Profile detected: Type=" << profile.profileType
+                << ", Edges=" << profile.orderedEdgeIds.size()
+                << ", Gaps=" << profile.gaps.size()
+                << ", Confidence=" << profile.profileConfidence << std::endl;
+
+        }
+        catch (const std::exception& e) {
+            std::cerr << "Error in DetectCompleteProfile: " << e.what() << std::endl;
+            profile.isValid = false;
+        }
+
+        return profile;
+    }
+
+    std::vector<EdgeConnection> StepReader::FindEdgeConnectionsWithGaps(
+        const std::vector<int>& edgeIds) const {
+
+        std::vector<EdgeConnection> connections;
+
+        // Multiple tolerance levels
+        const double EXACT_TOL = 0.01;      // 0.01mm
+        const double SMALL_GAP_TOL = 0.5;   // 0.5mm
+        const double MEDIUM_GAP_TOL = 5.0;  // 5mm
+
+        for (size_t i = 0; i < edgeIds.size(); i++) {
+            for (size_t j = i + 1; j < edgeIds.size(); j++) {
+                int id1 = edgeIds[i];
+                int id2 = edgeIds[j];
+
+                auto it1 = m_topoEdgeMap.find(id1);
+                auto it2 = m_topoEdgeMap.find(id2);
+
+                if (it1 == m_topoEdgeMap.end() || it2 == m_topoEdgeMap.end())
+                    continue;
+
+                // Check all 4 connection types
+                CheckConnectionWithGap(it1->second, it2->second, id1, id2,
+                    connections, MEDIUM_GAP_TOL);
+            }
+        }
+
+        return connections;
+    }
+
+    // Find all edge connections with tangent checking
+    std::vector<EdgeConnection> StepReader::FindEdgeConnections(
+        const std::vector<int>& edgeIds,
+        double positionTolerance,
+        double tangentTolerance) const {
+
+        std::vector<EdgeConnection> connections;
+
+        // Check all edge pairs
+        for (size_t i = 0; i < edgeIds.size(); i++) {
+            for (size_t j = 0; j < edgeIds.size(); j++) {
+                if (i == j) continue;
+
+                int id1 = edgeIds[i];
+                int id2 = edgeIds[j];
+
+                auto it1 = m_topoEdgeMap.find(id1);
+                auto it2 = m_topoEdgeMap.find(id2);
+
+                if (it1 == m_topoEdgeMap.end() || it2 == m_topoEdgeMap.end())
+                    continue;
+
+                gp_Pnt connectionPt;
+                EdgeConnection::ConnectionType connType;
+                double tangentAngle;
+
+                if (CheckEdgeConnection(it1->second, it2->second,
+                    connectionPt, connType, tangentAngle, positionTolerance)) {
+
+                    EdgeConnection conn;
+                    conn.fromEdgeId = id1;
+                    conn.toEdgeId = id2;
+                    conn.connectionType = connType;
+                    conn.connectionPoint = connectionPt;
+                    conn.tangentAngle = tangentAngle;
+                    conn.isSmooth = (tangentAngle < tangentTolerance ||
+                        tangentAngle >(180.0 - tangentTolerance));
+
+                    connections.push_back(conn);
+                }
+            }
+        }
+
+        return connections;
+    }
+
+    // Check if two edges connect and calculate tangent angle
+    bool StepReader::CheckEdgeConnection(const TopoDS_Edge& edge1, const TopoDS_Edge& edge2,
+        gp_Pnt& connectionPoint,
+        EdgeConnection::ConnectionType& connType,
+        double& tangentAngle, double posTol) const {
+
+        // Get vertices
+        TopoDS_Vertex v1Start, v1End, v2Start, v2End;
+        TopExp::Vertices(edge1, v1Start, v1End);
+        TopExp::Vertices(edge2, v2Start, v2End);
+
+        gp_Pnt p1s = BRep_Tool::Pnt(v1Start);
+        gp_Pnt p1e = BRep_Tool::Pnt(v1End);
+        gp_Pnt p2s = BRep_Tool::Pnt(v2Start);
+        gp_Pnt p2e = BRep_Tool::Pnt(v2End);
+
+        // Get curve parameters
+        Standard_Real f1, l1, f2, l2;
+        Handle(Geom_Curve) curve1 = BRep_Tool::Curve(edge1, f1, l1);
+        Handle(Geom_Curve) curve2 = BRep_Tool::Curve(edge2, f2, l2);
+
+        if (curve1.IsNull() || curve2.IsNull())
+            return false;
+
+        // Check 4 possible connections
+        // 1. End1 -> Start2
+        if (p1e.Distance(p2s) < posTol) {
+            connectionPoint = p1e;
+            connType = EdgeConnection::END_TO_START;
+
+            gp_Vec t1 = GetTangentAtParameter(edge1, l1, true);
+            gp_Vec t2 = GetTangentAtParameter(edge2, f2, true);
+            tangentAngle = t1.Angle(t2) * 180.0 / M_PI;
+            return true;
+        }
+
+        // 2. End1 -> End2
+        if (p1e.Distance(p2e) < posTol) {
+            connectionPoint = p1e;
+            connType = EdgeConnection::END_TO_END;
+
+            gp_Vec t1 = GetTangentAtParameter(edge1, l1, true);
+            gp_Vec t2 = GetTangentAtParameter(edge2, l2, false); // Reverse
+            tangentAngle = t1.Angle(t2) * 180.0 / M_PI;
+            return true;
+        }
+
+        // 3. Start1 -> Start2
+        if (p1s.Distance(p2s) < posTol) {
+            connectionPoint = p1s;
+            connType = EdgeConnection::START_TO_START;
+
+            gp_Vec t1 = GetTangentAtParameter(edge1, f1, false); // Reverse
+            gp_Vec t2 = GetTangentAtParameter(edge2, f2, true);
+            tangentAngle = t1.Angle(t2) * 180.0 / M_PI;
+            return true;
+        }
+
+        // 4. Start1 -> End2
+        if (p1s.Distance(p2e) < posTol) {
+            connectionPoint = p1s;
+            connType = EdgeConnection::START_TO_END;
+
+            gp_Vec t1 = GetTangentAtParameter(edge1, f1, false); // Reverse
+            gp_Vec t2 = GetTangentAtParameter(edge2, l2, false); // Reverse
+            tangentAngle = t1.Angle(t2) * 180.0 / M_PI;
+            return true;
+        }
+
+        return false;
+    }
+
+    // Get tangent vector at parameter
+    gp_Vec StepReader::GetTangentAtParameter(const TopoDS_Edge& edge, double param, bool forward) const {
+        BRepAdaptor_Curve adaptor(edge);
+        gp_Pnt pt;
+        gp_Vec tangent;
+
+        adaptor.D1(param, pt, tangent);
+
+        if (!forward) {
+            tangent.Reverse();
+        }
+
+        if (tangent.Magnitude() > Precision::Confusion()) {
+            tangent.Normalize();
+        }
+
+        return tangent;
+    }
+
+    // Classify profile type based on edges
+    ProfileInfo::ProfileType StepReader::ClassifyProfileType(const ProfileInfo& profile) const {
+        if (!profile.isClosed) {
+            std::cout << "Profile is OPEN_CHAIN\n";
+            return ProfileInfo::OPEN_CHAIN;
+        }
+
+        int edgeCount = static_cast<int>(profile.orderedEdgeIds.size());
+        std::cout << "Classifying profile with " << edgeCount << " edges\n";
+
+
+        // Count edge types
+        int lineCount = 0;
+        int circleCount = 0;
+        int bsplineCount = 0;
+        int otherCount = 0;
+
+        for (int edgeId : profile.orderedEdgeIds) {
+            for (const auto& edge : m_edges) {
+                if (edge.id == edgeId) {
+                    switch (edge.type) {
+                    case EdgeInfo::LINE:
+                        lineCount++;
+                        std::cout << "  Edge " << edgeId << ": LINE\n";
+                        break;
+                    case EdgeInfo::CIRCLE:
+                        circleCount++;
+                        std::cout << "  Edge " << edgeId << ": CIRCLE\n";
+                        break;
+                    case EdgeInfo::BSPLINE:
+                        bsplineCount++;
+                        std::cout << "  Edge " << edgeId << ": BSPLINE\n";
+                        break;
+                    default:
+                        otherCount++;
+                        std::cout << "  Edge " << edgeId << ": OTHER\n";
+                        break;
+                    }
+                    break;
+                }
+            }
+        }
+        std::cout << "Summary: " << lineCount << " lines, " << circleCount << " circles, "
+            << bsplineCount << " bsplines\n";
+
+
+        // Single circle
+        if (edgeCount == 1 && circleCount == 1) {
+            return ProfileInfo::SINGLE_CIRCLE;
+        }
+
+        // Rectangle: 4 lines with 90 degree angles
+        if (edgeCount == 4) {
+            // Accept 4 lines OR mix of lines and bsplines
+            if (lineCount == 4) {
+                std::cout << "Detected: RECTANGLE (4 lines)\n";
+                return ProfileInfo::RECTANGLE;
+            }
+            if (lineCount + bsplineCount == 4) {
+                std::cout << "Detected: RECTANGLE (lines + bsplines)\n";
+                return ProfileInfo::RECTANGLE;
+            }
+        }
+
+        // Slot: 2 lines + 2 semicircles
+        if (edgeCount == 4 && lineCount == 2 && circleCount == 2) {
+            return ProfileInfo::SLOT;
+        }
+
+        // Polygon: all lines
+        if (lineCount == edgeCount && edgeCount > 4) {
+            return ProfileInfo::POLYGON;
+        }
+
+        return ProfileInfo::COMPLEX_CLOSED;
+    }
+    // Implementation của CheckConnectionWithGap
+    void StepReader::CheckConnectionWithGap(const TopoDS_Edge& edge1,
+        const TopoDS_Edge& edge2,
+        int id1, int id2,
+        std::vector<EdgeConnection>& connections,
+        double maxGapTol) const {
+        // Get endpoints của 2 edges
+        TopoDS_Vertex v1Start, v1End, v2Start, v2End;
+        TopExp::Vertices(edge1, v1Start, v1End);
+        TopExp::Vertices(edge2, v2Start, v2End);
+
+        gp_Pnt p1s = BRep_Tool::Pnt(v1Start);
+        gp_Pnt p1e = BRep_Tool::Pnt(v1End);
+        gp_Pnt p2s = BRep_Tool::Pnt(v2Start);
+        gp_Pnt p2e = BRep_Tool::Pnt(v2End);
+
+        // Check 4 possible connections với gap tolerance
+        struct ConnectionCandidate {
+            EdgeConnection::ConnectionType type;
+            gp_Pnt p1, p2;
+            double distance;
+        };
+
+        std::vector<ConnectionCandidate> candidates = {
+            {EdgeConnection::END_TO_START, p1e, p2s, p1e.Distance(p2s)},
+            {EdgeConnection::END_TO_END, p1e, p2e, p1e.Distance(p2e)},
+            {EdgeConnection::START_TO_START, p1s, p2s, p1s.Distance(p2s)},
+            {EdgeConnection::START_TO_END, p1s, p2e, p1s.Distance(p2e)}
+        };
+
+        // Check each candidate
+        for (const auto& cand : candidates) {
+            if (cand.distance <= maxGapTol) {
+                EdgeConnection conn;
+                conn.fromEdgeId = id1;
+                conn.toEdgeId = id2;
+                conn.connectionType = cand.type;
+                conn.connectionPoint = cand.p1;  // Use first point as connection
+                conn.gapDistance = cand.distance;
+                conn.requiresGapClosing = (cand.distance > 0.01);  // Need gap closing if > 0.01mm
+
+                // Calculate tangent angle
+                double tangentAngle = 0.0;
+                gp_Pnt dummy;
+                CheckEdgeConnection(edge1, edge2, dummy, conn.connectionType, tangentAngle, maxGapTol);
+                conn.tangentAngle = tangentAngle;
+                conn.isSmooth = (tangentAngle < 15.0 || tangentAngle > 165.0);
+
+                connections.push_back(conn);
+            }
+        }
+    }
+
+    // Implementation của BuildProfileWithGaps
+    ProfileInfo StepReader::BuildProfileWithGaps(int startEdgeId,
+        const std::vector<EdgeConnection>& connections) const {
+        ProfileInfo profile;
+        profile.profileId = startEdgeId;
+        profile.isValid = false;
+
+        // Build adjacency map từ connections
+        std::map<int, std::vector<EdgeConnection>> adjacency;
+        for (const auto& conn : connections) {
+            adjacency[conn.fromEdgeId].push_back(conn);
+        }
+
+        // DFS/BFS để build ordered edge list
+        std::set<int> visited;
+        std::vector<int> orderedEdges;
+        std::vector<EdgeConnection> usedConnections;
+
+        // Start từ startEdgeId
+        int currentId = startEdgeId;
+        orderedEdges.push_back(currentId);
+        visited.insert(currentId);
+
+        // Trace profile
+        bool foundClosure = false;
+        while (true) {
+            bool foundNext = false;
+
+            // Find best connection từ current edge
+            if (adjacency.find(currentId) != adjacency.end()) {
+                const auto& conns = adjacency[currentId];
+
+                // Prioritize connections với gap nhỏ nhất
+                EdgeConnection bestConn;
+                double minGap = std::numeric_limits<double>::max();
+
+                for (const auto& conn : conns) {
+                    if (visited.find(conn.toEdgeId) == visited.end() ||
+                        (conn.toEdgeId == startEdgeId && orderedEdges.size() > 2)) {
+
+                        if (conn.gapDistance < minGap) {
+                            minGap = conn.gapDistance;
+                            bestConn = conn;
+                            foundNext = true;
+                        }
+                    }
+                }
+
+                if (foundNext) {
+                    // Check if closing the loop
+                    if (bestConn.toEdgeId == startEdgeId) {
+                        foundClosure = true;
+                        usedConnections.push_back(bestConn);
+
+                        // Add gap info if needed
+                        if (bestConn.requiresGapClosing) {
+                            GapInfo gap;
+                            gap.fromEdgeId = bestConn.fromEdgeId;
+                            gap.toEdgeId = bestConn.toEdgeId;
+                            gap.gapDistance = bestConn.gapDistance;
+                            gap.confidence = 1.0 - (bestConn.gapDistance / 5.0); // Simple confidence
+                            gap.suggestedMethod = (bestConn.gapDistance < 0.5) ?
+                                GapInfo::VIRTUAL_LINE : GapInfo::EXTEND_EDGES;
+                            profile.gaps.push_back(gap);
+                            profile.totalGapLength += bestConn.gapDistance;
+                        }
+                        break;
+                    }
+
+                    // Continue to next edge
+                    currentId = bestConn.toEdgeId;
+                    orderedEdges.push_back(currentId);
+                    visited.insert(currentId);
+                    usedConnections.push_back(bestConn);
+
+                    // Add gap info if needed
+                    if (bestConn.requiresGapClosing) {
+                        GapInfo gap;
+                        gap.fromEdgeId = bestConn.fromEdgeId;
+                        gap.toEdgeId = bestConn.toEdgeId;
+                        gap.gapDistance = bestConn.gapDistance;
+                        gap.confidence = 1.0 - (bestConn.gapDistance / 5.0);
+                        gap.suggestedMethod = (bestConn.gapDistance < 0.5) ?
+                            GapInfo::VIRTUAL_LINE : GapInfo::EXTEND_EDGES;
+                        profile.gaps.push_back(gap);
+                        profile.totalGapLength += bestConn.gapDistance;
+                    }
+                }
+            }
+
+            if (!foundNext) break;
+        }
+
+        // Set profile properties
+        profile.orderedEdgeIds = orderedEdges;
+        profile.connections = usedConnections;
+        profile.isClosed = foundClosure;
+        profile.hasVirtualEdges = !profile.gaps.empty();
+
+        // Calculate total length
+        profile.totalLength = 0.0;
+        for (int edgeId : orderedEdges) {
+            for (const auto& edge : m_edges) {
+                if (edge.id == edgeId) {
+                    profile.totalLength += edge.length;
+                    break;
+                }
+            }
+        }
+
+        profile.isValid = true;
+        return profile;
+    }
+
+    // Implementation của CalculateProfileConfidence
+    void StepReader::CalculateProfileConfidence(ProfileInfo& profile) const {
+        if (profile.gaps.empty()) {
+            profile.profileConfidence = 1.0;
+            return;
+        }
+
+        // Base confidence
+        double confidence = 1.0;
+
+        // Reduce confidence based on total gap length
+        if (profile.totalLength > 0) {
+            double gapRatio = profile.totalGapLength / profile.totalLength;
+            confidence *= (1.0 - gapRatio);
+        }
+
+        // Reduce confidence based on number of gaps
+        confidence *= std::pow(0.95, profile.gaps.size()); // 5% reduction per gap
+
+        // Reduce confidence based on max gap size
+        double maxGap = 0.0;
+        for (const auto& gap : profile.gaps) {
+            maxGap = std::max(maxGap, gap.gapDistance);
+        }
+
+        if (maxGap > 2.0) {  // Gaps > 2mm reduce confidence significantly
+            confidence *= 0.8;
+        }
+
+        profile.profileConfidence = std::max(0.1, confidence); // Minimum 10% confidence
+    }
+
 
 
 
