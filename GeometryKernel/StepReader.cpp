@@ -881,93 +881,222 @@ namespace GeometryKernel {
     bool StepReader::IsBSplineStraightDetailed(const TopoDS_Edge& edge,
         double tolerance,
         BSplineStraightInfo& info) const {
-        Standard_Real first, last;
-        Handle(Geom_Curve) curve = BRep_Tool::Curve(edge, first, last);
 
-        if (curve.IsNull() || !curve->IsKind(STANDARD_TYPE(Geom_BSplineCurve))) {
-            info.reason = "Not a BSpline curve";
-            return false;
-        }
+        // Initialize info
+        info.isStaight = false;
+        info.maxDeviation = 0.0;
+        info.maxCurvature = 0.0;
+        info.straightnessScore = 0.0;
+        info.length = 0.0;
 
-        Handle(Geom_BSplineCurve) bspline = Handle(Geom_BSplineCurve)::DownCast(curve);
+        try {
+            Standard_Real first, last;
+            Handle(Geom_Curve) curve = BRep_Tool::Curve(edge, first, last);
 
-        // 1. Check control points collinearity
-        int numPoles = bspline->NbPoles();
-        std::vector<gp_Pnt> poles;
-        for (int i = 1; i <= numPoles; i++) {
-            poles.push_back(bspline->Pole(i));
-        }
-
-        // Compute best-fit line through control points
-        gp_Pnt startPt = bspline->Value(first);
-        gp_Pnt endPt = bspline->Value(last);
-        gp_Vec lineVec(startPt, endPt);
-        gp_Lin referenceLine(startPt, gp_Dir(lineVec));
-
-        double maxControlDeviation = 0.0;
-        for (const auto& pole : poles) {
-            double dist = referenceLine.Distance(pole);
-            maxControlDeviation = std::max(maxControlDeviation, dist);
-        }
-
-        if (maxControlDeviation > tolerance * 5) {  // Loose check for control points
-            info.reason = "Control points not collinear";
-            info.maxDeviation = maxControlDeviation;
-            return false;
-        }
-
-        // 2. Check curvature
-        const int CURVATURE_SAMPLES = 20;
-        double maxCurvature = 0.0;
-
-        for (int i = 0; i <= CURVATURE_SAMPLES; i++) {
-            double param = first + (last - first) * i / CURVATURE_SAMPLES;
-            gp_Pnt pt;
-            gp_Vec d1, d2;
-            bspline->D2(param, pt, d1, d2);
-
-            double d1Mag = d1.Magnitude();
-            if (d1Mag > Precision::Confusion()) {
-                double curvature = d1.Crossed(d2).Magnitude() / pow(d1Mag, 3);
-                maxCurvature = std::max(maxCurvature, curvature);
+            if (curve.IsNull() || !curve->IsKind(STANDARD_TYPE(Geom_BSplineCurve))) {
+                info.reason = "Not a BSpline curve";
+                return false;
             }
-        }
 
-        const double MAX_CURVATURE = 0.001;
-        if (maxCurvature > MAX_CURVATURE) {
-            info.reason = "Curvature too high";
-            info.maxCurvature = maxCurvature;
-            return false;
-        }
+            Handle(Geom_BSplineCurve) bspline = Handle(Geom_BSplineCurve)::DownCast(curve);
 
-        // 3. Sample point deviation
-        const int NUM_SAMPLES = 50;
-        double maxSampleDeviation = 0.0;
+            // THÊM: Kiểm tra validity của BSpline handle
+            if (bspline.IsNull()) {
+                info.reason = "Invalid BSpline handle";
+                return false;
+            }
 
-        for (int i = 0; i <= NUM_SAMPLES; i++) {
-            double param = first + (last - first) * i / NUM_SAMPLES;
-            gp_Pnt pt = bspline->Value(param);
-            double dist = referenceLine.Distance(pt);
-            maxSampleDeviation = std::max(maxSampleDeviation, dist);
-        }
+            // THÊM: Kiểm tra parameter range
+            if (first >= last || !std::isfinite(first) || !std::isfinite(last)) {
+                info.reason = "Invalid parameter range";
+                return false;
+            }
 
-        if (maxSampleDeviation > tolerance) {
-            info.reason = "Sample points deviate";
+            // 1. Check control points collinearity
+            int numPoles = 0;
+            try {
+                numPoles = bspline->NbPoles();
+            }
+            catch (...) {
+                info.reason = "Cannot get number of poles";
+                return false;
+            }
+
+            if (numPoles < 2) {
+                info.reason = "Insufficient poles";
+                return false;
+            }
+
+            std::vector<gp_Pnt> poles;
+            poles.reserve(numPoles);
+
+            for (int i = 1; i <= numPoles; i++) {
+                try {
+                    poles.push_back(bspline->Pole(i));
+                }
+                catch (...) {
+                    info.reason = "Cannot access pole";
+                    return false;
+                }
+            }
+
+            // Compute best-fit line through control points
+            gp_Pnt startPt, endPt;
+            try {
+                startPt = bspline->Value(first);
+                endPt = bspline->Value(last);
+            }
+            catch (...) {
+                info.reason = "Cannot evaluate curve endpoints";
+                return false;
+            }
+
+            // THÊM: Kiểm tra endpoints hợp lệ
+            gp_Vec lineVec(startPt, endPt);
+            if (lineVec.Magnitude() < Precision::Confusion()) {
+                info.reason = "Zero-length curve";
+                return false;
+            }
+
+            gp_Lin referenceLine(startPt, gp_Dir(lineVec));
+
+            double maxControlDeviation = 0.0;
+            for (const auto& pole : poles) {
+                try {
+                    double dist = referenceLine.Distance(pole);
+                    maxControlDeviation = std::max(maxControlDeviation, dist);
+                }
+                catch (...) {
+                    // Skip problematic pole
+                    continue;
+                }
+            }
+
+            if (maxControlDeviation > tolerance * 5) {  // Loose check for control points
+                info.reason = "Control points not collinear";
+                info.maxDeviation = maxControlDeviation;
+                return false;
+            }
+
+            // 2. Check curvature
+            const int CURVATURE_SAMPLES = 20;
+            double maxCurvature = 0.0;
+
+            for (int i = 0; i <= CURVATURE_SAMPLES; i++) {
+                try {
+                    double param = first + (last - first) * i / CURVATURE_SAMPLES;
+
+                    // THÊM: Validate parameter
+                    if (!std::isfinite(param) || param < first || param > last) {
+                        continue;
+                    }
+
+                    gp_Pnt pt;
+                    gp_Vec d1, d2;
+
+                    // THÊM: Use try-catch for D2 evaluation
+                    try {
+                        bspline->D2(param, pt, d1, d2);
+                    }
+                    catch (...) {
+                        // Skip this sample point
+                        continue;
+                    }
+
+                    double d1Mag = d1.Magnitude();
+                    if (d1Mag > Precision::Confusion()) {
+                        gp_Vec cross = d1.Crossed(d2);
+                        double curvature = cross.Magnitude() / pow(d1Mag, 3);
+
+                        // THÊM: Check for valid curvature value
+                        if (std::isfinite(curvature)) {
+                            maxCurvature = std::max(maxCurvature, curvature);
+                        }
+                    }
+                }
+                catch (...) {
+                    // Continue with next sample
+                    continue;
+                }
+            }
+
+            const double MAX_CURVATURE = 0.001;
+            if (maxCurvature > MAX_CURVATURE) {
+                info.reason = "Curvature too high";
+                info.maxCurvature = maxCurvature;
+                return false;
+            }
+
+            // 3. Sample point deviation
+            const int NUM_SAMPLES = 50;
+            double maxSampleDeviation = 0.0;
+            int validSamples = 0;
+
+            for (int i = 0; i <= NUM_SAMPLES; i++) {
+                try {
+                    double param = first + (last - first) * i / NUM_SAMPLES;
+
+                    // THÊM: Validate parameter
+                    if (!std::isfinite(param) || param < first || param > last) {
+                        continue;
+                    }
+
+                    gp_Pnt pt = bspline->Value(param);
+                    double dist = referenceLine.Distance(pt);
+
+                    // THÊM: Check for valid distance
+                    if (std::isfinite(dist)) {
+                        maxSampleDeviation = std::max(maxSampleDeviation, dist);
+                        validSamples++;
+                    }
+                }
+                catch (...) {
+                    // Skip problematic sample
+                    continue;
+                }
+            }
+
+            // THÊM: Ensure we have enough valid samples
+            if (validSamples < NUM_SAMPLES / 2) {
+                info.reason = "Too few valid samples";
+                return false;
+            }
+
+            if (maxSampleDeviation > tolerance) {
+                info.reason = "Sample points deviate";
+                info.maxDeviation = maxSampleDeviation;
+                return false;
+            }
+
+            // Fill success info
+            info.isStaight = true;
+            info.startPoint = startPt;
+            info.endPoint = endPt;
+            info.direction = gp_Dir(lineVec);
+            info.length = startPt.Distance(endPt);
             info.maxDeviation = maxSampleDeviation;
+            info.maxCurvature = maxCurvature;
+            info.straightnessScore = 1.0 - (maxSampleDeviation / tolerance);
+
+            return true;
+
+        }
+        catch (const Standard_Failure& e) {
+            info.reason = "OpenCASCADE exception: ";
+            if (e.GetMessageString() != NULL) {
+                info.reason += e.GetMessageString();
+            }
             return false;
         }
-
-        // Fill success info
-        info.isStaight = true;
-        info.startPoint = startPt;
-        info.endPoint = endPt;
-        info.direction = gp_Dir(lineVec);
-        info.length = startPt.Distance(endPt);
-        info.maxDeviation = maxSampleDeviation;
-        info.maxCurvature = maxCurvature;
-        info.straightnessScore = 1.0 - (maxSampleDeviation / tolerance);
-
-        return true;
+        catch (const std::exception& e) {
+            info.reason = "Standard exception: ";
+            info.reason += e.what();
+            return false;
+        }
+        catch (...) {
+            info.reason = "Unknown exception";
+            return false;
+        }
     }
 
 

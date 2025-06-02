@@ -316,6 +316,92 @@ namespace TubeLaserCAM.UI.Views
             }
         }
 
+        /// <summary>
+        /// Debug method để so sánh data với G-Code
+        /// </summary>
+        public void DebugCompareWithGCode(string generatedGCode)
+        {
+            System.Diagnostics.Debug.WriteLine("\n=== COMPARE 2D VIEW vs G-CODE ===");
+
+            // Parse G-Code
+            var parser = new GCodeParser();
+            var parsed = parser.ParseGCode(generatedGCode);
+
+            System.Diagnostics.Debug.WriteLine($"2D View: {toolpaths.Count} toolpaths");
+            System.Diagnostics.Debug.WriteLine($"G-Code: {parsed.Moves.Count} moves, {parsed.PierceCount} pierces");
+
+            // So sánh từng toolpath với G-Code moves
+            foreach (var toolpath in toolpaths.Take(3)) // First 3 toolpaths
+            {
+                System.Diagnostics.Debug.WriteLine($"\nToolpath #{toolpath.EdgeId}:");
+                System.Diagnostics.Debug.WriteLine($"  2D View first point: Y={toolpath.Points[0].Y:F3}, C={toolpath.Points[0].C:F3}");
+                System.Diagnostics.Debug.WriteLine($"  2D View last point: Y={toolpath.Points.Last().Y:F3}, C={toolpath.Points.Last().C:F3}");
+
+                // Tìm corresponding moves trong G-Code
+                var correspondingMoves = FindCorrespondingMoves(parsed, toolpath);
+                if (correspondingMoves.Any())
+                {
+                    System.Diagnostics.Debug.WriteLine($"  G-Code moves found: {correspondingMoves.Count}");
+                    var firstMove = correspondingMoves.First();
+                    var lastMove = correspondingMoves.Last();
+                    System.Diagnostics.Debug.WriteLine($"  G-Code first: Y={firstMove.Y:F3}, C={firstMove.C:F3}");
+                    System.Diagnostics.Debug.WriteLine($"  G-Code last: Y={lastMove.Y:F3}, C={lastMove.C:F3}");
+                }
+                else
+                {
+                    System.Diagnostics.Debug.WriteLine("  WARNING: No corresponding G-Code moves found!");
+                }
+            }
+
+            // Check coordinate system
+            System.Diagnostics.Debug.WriteLine($"\n2D View settings:");
+            System.Diagnostics.Debug.WriteLine($"  Cylinder radius: {cylinderRadius}");
+            System.Diagnostics.Debug.WriteLine($"  Cylinder length: {cylinderLength}");
+            System.Diagnostics.Debug.WriteLine($"  Scale: {scale}");
+            System.Diagnostics.Debug.WriteLine($"  Canvas offset: X=50, Y=50");
+
+            System.Diagnostics.Debug.WriteLine("=== END COMPARE ===\n");
+        }
+
+        private List<GCodeParser.GCodeMove> FindCorrespondingMoves(
+    GCodeParser.ParseResult parsed,
+    UnrolledToolpath toolpath)
+        {
+            var moves = new List<GCodeParser.GCodeMove>();
+            var tolerance = 0.1; // 0.1mm tolerance
+
+            // Find moves that match toolpath start point
+            var startY = toolpath.Points[0].Y;
+            var startC = toolpath.Points[0].C;
+
+            bool foundStart = false;
+            foreach (var move in parsed.Moves)
+            {
+                if (!foundStart &&
+                    Math.Abs(move.Y - startY) < tolerance &&
+                    Math.Abs(move.C - startC) < tolerance)
+                {
+                    foundStart = true;
+                }
+
+                if (foundStart)
+                {
+                    moves.Add(move);
+
+                    // Check if we reached the end
+                    var endY = toolpath.Points.Last().Y;
+                    var endC = toolpath.Points.Last().C;
+                    if (Math.Abs(move.Y - endY) < tolerance &&
+                        Math.Abs(move.C - endC) < tolerance)
+                    {
+                        break;
+                    }
+                }
+            }
+
+            return moves;
+        }
+
         private void DrawSinglePoint(UnrolledPoint point, UnrolledToolpath toolpath)
         {
             try

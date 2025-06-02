@@ -291,32 +291,40 @@ namespace TubeLaserCAM.UI.ViewModels
                 StatusText = "No unrolled toolpaths to generate G-Code";
                 return;
             }
-
             try
             {
                 var settingsDialog = new Views.GCodeSettingsDialog(gcodeSettings);
-
                 if (settingsDialog.ShowDialog() == true)
                 {
                     gcodeSettings = settingsDialog.Settings;
-
                     // Generate G-Code
                     var generator = new GCodeGenerator(gcodeSettings);
+
                     System.Diagnostics.Debug.WriteLine("=== G-Code Generation Debug ===");
                     System.Diagnostics.Debug.WriteLine($"Total toolpaths: {UnrolledToolpaths.Count}");
                     System.Diagnostics.Debug.WriteLine($"Optimize sequence: {gcodeSettings.OptimizeSequence}");
                     System.Diagnostics.Debug.WriteLine($"Complete profile: {gcodeSettings.CuttingStrategy.CompleteProfileBeforeMoving}");
                     System.Diagnostics.Debug.WriteLine($"Y Direction: {gcodeSettings.CuttingStrategy.YDirection}");
+
+                    // BƯỚC 1: VERIFY UNROLLED DATA
+                    System.Diagnostics.Debug.WriteLine("\n=== BƯỚC 1: VERIFY UNROLLED DATA ===");
+                    generator.DebugUnrolledData(UnrolledToolpaths.ToList());
+
+                    // Generate G-Code với debug
+                    System.Diagnostics.Debug.WriteLine("\n=== BƯỚC 2: GENERATING G-CODE ===");
                     var gcode = generator.GenerateGCode(
                         UnrolledToolpaths.ToList(),
                         CylinderInfo
                     );
-                    System.Diagnostics.Debug.WriteLine("=== Generated G-Code (first 50 lines) ===");
+
+                    // Debug generated G-Code
+                    System.Diagnostics.Debug.WriteLine("\n=== Generated G-Code (first 50 lines) ===");
                     var lines = gcode.Split('\n').Take(50);
                     foreach (var line in lines)
                     {
                         System.Diagnostics.Debug.WriteLine(line.TrimEnd());
                     }
+
                     System.Diagnostics.Debug.WriteLine("\n=== All Movement Commands ===");
                     var moveLines = gcode.Split('\n')
                         .Where(l => l.TrimStart().StartsWith("G0") || l.TrimStart().StartsWith("G1"))
@@ -324,6 +332,43 @@ namespace TubeLaserCAM.UI.ViewModels
                     foreach (var line in moveLines)
                     {
                         System.Diagnostics.Debug.WriteLine(line.TrimEnd());
+                    }
+
+                    // BƯỚC 3: SO SÁNH VỚI 2D VIEW (nếu có)
+                    System.Diagnostics.Debug.WriteLine("\n=== BƯỚC 3: SO SÁNH VỚI 2D VIEW ===");
+                    var existing2DView = Application.Current.Windows
+                        .OfType<Unrolled2DView>()
+                        .FirstOrDefault();
+
+                    if (existing2DView != null)
+                    {
+                        System.Diagnostics.Debug.WriteLine("Found existing 2D View window");
+                        existing2DView.DebugCompareWithGCode(gcode);
+                    }
+                    else
+                    {
+                        System.Diagnostics.Debug.WriteLine("No 2D View window found for comparison");
+                    }
+
+                    // Parse và analyze G-Code để debug thêm
+                    System.Diagnostics.Debug.WriteLine("\n=== G-CODE ANALYSIS ===");
+                    var parser = new GCodeParser();
+                    var parsed = parser.ParseGCode(gcode);
+                    System.Diagnostics.Debug.WriteLine($"Parsed moves: {parsed.Moves.Count}");
+                    System.Diagnostics.Debug.WriteLine($"Cut moves: {parsed.Moves.Count(m => m.Type == GCodeParser.GCodeMove.MoveType.Cut)}");
+                    System.Diagnostics.Debug.WriteLine($"Rapid moves: {parsed.Moves.Count(m => m.Type == GCodeParser.GCodeMove.MoveType.Rapid)}");
+                    System.Diagnostics.Debug.WriteLine($"Pierce count: {parsed.PierceCount}");
+                    System.Diagnostics.Debug.WriteLine($"Total cut length: {parsed.TotalCutLength:F2}mm");
+                    System.Diagnostics.Debug.WriteLine($"Total rapid length: {parsed.TotalRapidLength:F2}mm");
+
+                    // Debug first few cut moves
+                    System.Diagnostics.Debug.WriteLine("\n=== First 5 Cut Moves ===");
+                    var firstCuts = parsed.Moves
+                        .Where(m => m.Type == GCodeParser.GCodeMove.MoveType.Cut)
+                        .Take(5);
+                    foreach (var cut in firstCuts)
+                    {
+                        System.Diagnostics.Debug.WriteLine($"Line {cut.LineNumber}: Y={cut.Y:F3}, C={cut.C:F3}");
                     }
 
                     // Save dialog
@@ -355,8 +400,14 @@ namespace TubeLaserCAM.UI.ViewModels
 
                             if (existingWindow != null)
                             {
+                                // Load G-Code for visualization
+                                System.Diagnostics.Debug.WriteLine("\n=== LOADING G-CODE IN 2D VIEW ===");
                                 existingWindow.LoadGCodeForVisualization(gcode);
                                 existingWindow.Activate();
+
+                                // Additional comparison after loading
+                                System.Diagnostics.Debug.WriteLine("\n=== FINAL COMPARISON ===");
+                                existingWindow.DebugCompareWithGCode(gcode);
                             }
                         }
                     }
@@ -364,6 +415,11 @@ namespace TubeLaserCAM.UI.ViewModels
             }
             catch (Exception ex)
             {
+                System.Diagnostics.Debug.WriteLine($"\n=== ERROR IN G-CODE GENERATION ===");
+                System.Diagnostics.Debug.WriteLine($"Exception: {ex.GetType().Name}");
+                System.Diagnostics.Debug.WriteLine($"Message: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"Stack Trace:\n{ex.StackTrace}");
+
                 StatusText = $"Error generating G-Code: {ex.Message}";
                 MessageBox.Show(ex.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
             }

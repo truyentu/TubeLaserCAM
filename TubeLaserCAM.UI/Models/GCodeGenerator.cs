@@ -45,6 +45,44 @@ namespace TubeLaserCAM.UI.Models
             this.profileAnalyzer = new ProfileAnalyzer();
         }
 
+        public void DebugUnrolledData(List<UnrolledToolpath> toolpaths)
+        {
+            System.Diagnostics.Debug.WriteLine("=== VERIFY UNROLLED DATA ===");
+            System.Diagnostics.Debug.WriteLine($"Total toolpaths: {toolpaths.Count}");
+
+            foreach (var toolpath in toolpaths)
+            {
+                System.Diagnostics.Debug.WriteLine($"\nToolpath Edge #{toolpath.EdgeId}:");
+                System.Diagnostics.Debug.WriteLine($"  Type: {toolpath.EdgeInfo?.Type ?? "Unknown"}");
+                System.Diagnostics.Debug.WriteLine($"  Points: {toolpath.Points.Count}");
+                System.Diagnostics.Debug.WriteLine($"  Y Range: [{toolpath.MinY:F3}, {toolpath.MaxY:F3}]");
+                System.Diagnostics.Debug.WriteLine($"  Total Rotation: {toolpath.TotalRotation:F3}°");
+
+                // Print first 3 and last 3 points
+                if (toolpath.Points.Count > 0)
+                {
+                    System.Diagnostics.Debug.WriteLine("  First 3 points:");
+                    for (int i = 0; i < Math.Min(3, toolpath.Points.Count); i++)
+                    {
+                        var pt = toolpath.Points[i];
+                        System.Diagnostics.Debug.WriteLine($"    [{i}] Y={pt.Y:F3}, C={pt.C:F3}, X={pt.X:F3}");
+                    }
+
+                    if (toolpath.Points.Count > 6)
+                    {
+                        System.Diagnostics.Debug.WriteLine("  ...");
+                        System.Diagnostics.Debug.WriteLine("  Last 3 points:");
+                        for (int i = Math.Max(0, toolpath.Points.Count - 3); i < toolpath.Points.Count; i++)
+                        {
+                            var pt = toolpath.Points[i];
+                            System.Diagnostics.Debug.WriteLine($"    [{i}] Y={pt.Y:F3}, C={pt.C:F3}, X={pt.X:F3}");
+                        }
+                    }
+                }
+            }
+            System.Diagnostics.Debug.WriteLine("=== END VERIFY ===\n");
+        }
+
         public virtual string GenerateGCode(List<UnrolledToolpath> toolpaths, CylinderData cylinderInfo)
         {
             gcode.Clear();
@@ -413,14 +451,33 @@ namespace TubeLaserCAM.UI.Models
 
         private double HandleCAxisWrap(double prevC, double currentC)
         {
+            // KHÔNG wrap nếu đang trong một continuous toolpath
+            // Chỉ wrap khi chuyển giữa các toolpaths khác nhau
+
             double diff = currentC - prevC;
 
-            if (Math.Abs(diff) > 180)
+            System.Diagnostics.Debug.WriteLine($"HandleCAxisWrap: prev={prevC:F3}, current={currentC:F3}, diff={diff:F3}");
+
+            // Nếu diff nhỏ (continuous motion), giữ nguyên
+            if (Math.Abs(diff) <= 180)
             {
-                if (diff > 0)
-                    return currentC - 360;
-                else
-                    return currentC + 360;
+                return currentC;
+            }
+
+            // Chỉ wrap khi thực sự cần
+            if (diff > 180)
+            {
+                // Đang đi từ góc lớn sang góc nhỏ (vd: 350° -> 10°)
+                double wrapped = currentC + 360;
+                System.Diagnostics.Debug.WriteLine($"  Forward wrap: {currentC:F3} -> {wrapped:F3}");
+                return wrapped;
+            }
+            else if (diff < -180)
+            {
+                // Đang đi từ góc nhỏ sang góc lớn (vd: 10° -> 350°)
+                double wrapped = currentC - 360;
+                System.Diagnostics.Debug.WriteLine($"  Backward wrap: {currentC:F3} -> {wrapped:F3}");
+                return wrapped;
             }
 
             return currentC;

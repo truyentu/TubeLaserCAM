@@ -14,7 +14,7 @@ namespace TubeLaserCAM.UI.Models
     public class ProfileAnalyzer
     {
         #region Constants
-        private const double POSITION_TOLERANCE = 0.01; // 0.01mm cho endpoint matching
+        private const double POSITION_TOLERANCE = 0.1; //
         private const double TANGENT_ANGLE_TOLERANCE = 15.0; // 15 degrees
         private const double PARALLEL_TOLERANCE = 1.0; // 1 degree cho parallel checking
         #endregion
@@ -247,10 +247,18 @@ namespace TubeLaserCAM.UI.Models
 
                 node.StartPoint = new Point3D(firstPoint.C, firstPoint.Y, 0);
                 node.EndPoint = new Point3D(lastPoint.C, lastPoint.Y, 0);
-
+                // Debug cho circles
+                if (toolpath.EdgeInfo?.Type == "Circle" && toolpath.Points.Count < 20)
+                {
+                    System.Diagnostics.Debug.WriteLine($"  Small Circle Edge#{toolpath.EdgeId}:");
+                    System.Diagnostics.Debug.WriteLine($"    Points: {toolpath.Points.Count}");
+                    System.Diagnostics.Debug.WriteLine($"    Start: C={firstPoint.C:F3} -> End: C={lastPoint.C:F3}");
+                    System.Diagnostics.Debug.WriteLine($"    Start==End? {firstPoint.C == lastPoint.C && firstPoint.Y == lastPoint.Y}");
+                }
                 // Calculate tangents
                 node.StartTangent = CalculateTangentAtStart(toolpath);
                 node.EndTangent = CalculateTangentAtEnd(toolpath);
+
 
                 nodes[toolpath.EdgeId] = node;
             }
@@ -356,11 +364,16 @@ namespace TubeLaserCAM.UI.Models
         {
             var connections = new List<EdgeConnection>();
 
-            // Check 4 possible connections
+            System.Diagnostics.Debug.WriteLine($"Checking connections between Edge#{node1.EdgeId} and Edge#{node2.EdgeId}");
+            System.Diagnostics.Debug.WriteLine($"  Edge#{node1.EdgeId}: Start({node1.StartPoint.X:F3},{node1.StartPoint.Y:F3}) End({node1.EndPoint.X:F3},{node1.EndPoint.Y:F3})");
+            System.Diagnostics.Debug.WriteLine($"  Edge#{node2.EdgeId}: Start({node2.StartPoint.X:F3},{node2.StartPoint.Y:F3}) End({node2.EndPoint.X:F3},{node2.EndPoint.Y:F3})");
+
+            // Check 4 possible connections với C-axis wrap support
 
             // 1. End1 -> Start2 (normal continuation)
-            if (ArePointsEqual(node1.EndPoint, node2.StartPoint))
+            if (ArePointsEqualWithWrap(node1.EndPoint, node2.StartPoint))
             {
+                System.Diagnostics.Debug.WriteLine($"  Found End1->Start2 connection (with wrap check)");
                 double angle = Vector3D.AngleBetween(node1.EndTangent, node2.StartTangent);
                 connections.Add(new EdgeConnection
                 {
@@ -374,8 +387,9 @@ namespace TubeLaserCAM.UI.Models
             }
 
             // 2. End1 -> End2 (node2 reversed)
-            if (ArePointsEqual(node1.EndPoint, node2.EndPoint))
+            if (ArePointsEqualWithWrap(node1.EndPoint, node2.EndPoint))
             {
+                System.Diagnostics.Debug.WriteLine($"  Found End1->End2 connection (with wrap check)");
                 double angle = Vector3D.AngleBetween(node1.EndTangent, -node2.EndTangent);
                 connections.Add(new EdgeConnection
                 {
@@ -389,8 +403,9 @@ namespace TubeLaserCAM.UI.Models
             }
 
             // 3. Start1 -> Start2 (both reversed)
-            if (ArePointsEqual(node1.StartPoint, node2.StartPoint))
+            if (ArePointsEqualWithWrap(node1.StartPoint, node2.StartPoint))
             {
+                System.Diagnostics.Debug.WriteLine($"  Found Start1->Start2 connection (with wrap check)");
                 double angle = Vector3D.AngleBetween(-node1.StartTangent, node2.StartTangent);
                 connections.Add(new EdgeConnection
                 {
@@ -404,8 +419,9 @@ namespace TubeLaserCAM.UI.Models
             }
 
             // 4. Start1 -> End2 (node1 reversed)
-            if (ArePointsEqual(node1.StartPoint, node2.EndPoint))
+            if (ArePointsEqualWithWrap(node1.StartPoint, node2.EndPoint))
             {
+                System.Diagnostics.Debug.WriteLine($"  Found Start1->End2 connection (with wrap check)");
                 double angle = Vector3D.AngleBetween(-node1.StartTangent, -node2.EndTangent);
                 connections.Add(new EdgeConnection
                 {
@@ -418,6 +434,16 @@ namespace TubeLaserCAM.UI.Models
                 });
             }
 
+            // Debug output nếu tìm thấy connections
+            if (connections.Count > 0)
+            {
+                System.Diagnostics.Debug.WriteLine($"  Total connections found: {connections.Count}");
+                foreach (var conn in connections)
+                {
+                    System.Diagnostics.Debug.WriteLine($"    {conn.Type}: {conn.FromEdgeId}->{conn.ToEdgeId}, Smooth={conn.IsSmooth}, Angle={conn.TangentAngle:F1}°");
+                }
+            }
+
             return connections;
         }
 
@@ -426,7 +452,16 @@ namespace TubeLaserCAM.UI.Models
         /// </summary>
         private bool ArePointsEqual(Point3D p1, Point3D p2)
         {
-            return (p1 - p2).Length < POSITION_TOLERANCE;
+            double distance = (p1 - p2).Length;
+            bool equal = distance < POSITION_TOLERANCE;
+
+            // Debug chi tiết
+            if (distance < 1.0) // Trong khoảng 1mm
+            {
+                System.Diagnostics.Debug.WriteLine($"Point comparison: ({p1.X:F3},{p1.Y:F3}) vs ({p2.X:F3},{p2.Y:F3}) = {distance:F6}mm, Equal={equal}");
+            }
+
+            return equal;
         }
 
         #endregion
@@ -436,6 +471,60 @@ namespace TubeLaserCAM.UI.Models
         /// <summary>
         /// Tìm các connected components trong graph
         /// </summary>
+        /// 
+        /// <summary>
+        /// Kiểm tra 2 điểm có bằng nhau với C-axis wrap
+        /// </summary>
+        /// <summary>
+        /// Kiểm tra 2 điểm có bằng nhau với C-axis wrap-around support
+        /// </summary>
+        private bool ArePointsEqualWithWrap(Point3D p1, Point3D p2)
+        {
+            // Check Y first (no wrap needed)
+            if (Math.Abs(p1.Y - p2.Y) > POSITION_TOLERANCE)
+                return false;
+
+            // Check C (X in 3D space) with wrap-around at 0°/360°
+            double c1 = p1.X; // X represents C angle
+            double c2 = p2.X;
+
+            // Direct comparison
+            if (Math.Abs(c1 - c2) < POSITION_TOLERANCE)
+            {
+                System.Diagnostics.Debug.WriteLine($"    Points equal directly: C1={c1:F3} ≈ C2={c2:F3}");
+                return true;
+            }
+
+            // Check with +360° wrap (c2 wrapped forward)
+            if (Math.Abs(c1 - (c2 + 360)) < POSITION_TOLERANCE)
+            {
+                System.Diagnostics.Debug.WriteLine($"    Points equal with +360 wrap: C1={c1:F3} ≈ C2+360={c2 + 360:F3}");
+                return true;
+            }
+
+            // Check with -360° wrap (c2 wrapped backward)
+            if (Math.Abs(c1 - (c2 - 360)) < POSITION_TOLERANCE)
+            {
+                System.Diagnostics.Debug.WriteLine($"    Points equal with -360 wrap: C1={c1:F3} ≈ C2-360={c2 - 360:F3}");
+                return true;
+            }
+
+            // Also check reverse (c1 wrapped)
+            if (Math.Abs((c1 + 360) - c2) < POSITION_TOLERANCE)
+            {
+                System.Diagnostics.Debug.WriteLine($"    Points equal with C1+360 wrap: C1+360={c1 + 360:F3} ≈ C2={c2:F3}");
+                return true;
+            }
+
+            if (Math.Abs((c1 - 360) - c2) < POSITION_TOLERANCE)
+            {
+                System.Diagnostics.Debug.WriteLine($"    Points equal with C1-360 wrap: C1-360={c1 - 360:F3} ≈ C2={c2:F3}");
+                return true;
+            }
+
+            return false;
+        }
+
         private List<List<EdgeNode>> FindConnectedComponents(
             Dictionary<int, EdgeNode> nodes,
             List<EdgeConnection> connections)
@@ -565,6 +654,9 @@ namespace TubeLaserCAM.UI.Models
 
             // THÊM: Create node dictionary
             var nodeDict = component.ToDictionary(n => n.EdgeId);
+
+            System.Diagnostics.Debug.WriteLine($"FindClosedLoops: Checking {component.Count} nodes");
+
 
             foreach (var startNode in component)
             {
