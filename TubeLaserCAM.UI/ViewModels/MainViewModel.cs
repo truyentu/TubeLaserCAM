@@ -298,10 +298,29 @@ namespace TubeLaserCAM.UI.ViewModels
 
                     // Generate G-Code
                     var generator = new GCodeGenerator(gcodeSettings);
+                    System.Diagnostics.Debug.WriteLine("=== G-Code Generation Debug ===");
+                    System.Diagnostics.Debug.WriteLine($"Total toolpaths: {UnrolledToolpaths.Count}");
+                    System.Diagnostics.Debug.WriteLine($"Optimize sequence: {gcodeSettings.OptimizeSequence}");
+                    System.Diagnostics.Debug.WriteLine($"Complete profile: {gcodeSettings.CuttingStrategy.CompleteProfileBeforeMoving}");
+                    System.Diagnostics.Debug.WriteLine($"Y Direction: {gcodeSettings.CuttingStrategy.YDirection}");
                     var gcode = generator.GenerateGCode(
                         UnrolledToolpaths.ToList(),
                         CylinderInfo
                     );
+                    System.Diagnostics.Debug.WriteLine("=== Generated G-Code (first 50 lines) ===");
+                    var lines = gcode.Split('\n').Take(50);
+                    foreach (var line in lines)
+                    {
+                        System.Diagnostics.Debug.WriteLine(line.TrimEnd());
+                    }
+                    System.Diagnostics.Debug.WriteLine("\n=== All Movement Commands ===");
+                    var moveLines = gcode.Split('\n')
+                        .Where(l => l.TrimStart().StartsWith("G0") || l.TrimStart().StartsWith("G1"))
+                        .Take(20);
+                    foreach (var line in moveLines)
+                    {
+                        System.Diagnostics.Debug.WriteLine(line.TrimEnd());
+                    }
 
                     // Save dialog
                     var saveDialog = new SaveFileDialog

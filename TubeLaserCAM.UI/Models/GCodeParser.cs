@@ -95,7 +95,10 @@ namespace TubeLaserCAM.UI.Models
         private GCodeMove ParseLine(string line, int lineNumber)
         {
             GCodeMove move = null;
-
+            if (line.StartsWith("G0") || line.StartsWith("G1"))
+            {
+                System.Diagnostics.Debug.WriteLine($"Parsing line {lineNumber}: {line}");
+            }
             // Remove inline comments
             var commentIndex = line.IndexOf(';');
             if (commentIndex >= 0)
@@ -118,6 +121,7 @@ namespace TubeLaserCAM.UI.Models
                 };
 
                 ParseCoordinates(line, move);
+                System.Diagnostics.Debug.WriteLine($"  Parsed G0: Y={move.Y:F3}, C={move.C:F3}");
                 UpdateCurrentPosition(move);
             }
             // G1 - Feed move
@@ -270,6 +274,8 @@ namespace TubeLaserCAM.UI.Models
 
         private double CalculateDistance(GCodeMove from, GCodeMove to, double radius)
         {
+            System.Diagnostics.Debug.WriteLine($"Distance calc: From Y={from.Y:F3},C={from.C:F3} " +
+                                     $"To Y={to.Y:F3},C={to.C:F3}");
             // Distance in Y
             double deltaY = to.Y - from.Y;
 
@@ -288,8 +294,12 @@ namespace TubeLaserCAM.UI.Models
             // Convert angle to arc length
             double arcLength = Math.Abs(deltaC) * Math.PI / 180.0 * radius;
 
-            // Total distance
-            return Math.Sqrt(deltaY * deltaY + arcLength * arcLength);
+            double distance = Math.Sqrt(deltaY * deltaY + arcLength * arcLength);
+
+            System.Diagnostics.Debug.WriteLine($"  Delta Y={deltaY:F3}, Delta C={deltaC:F3}, " +
+                                             $"Arc length={arcLength:F3}, Total={distance:F3}");
+
+            return distance;
         }
     }
 }

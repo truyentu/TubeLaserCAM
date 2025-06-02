@@ -583,6 +583,8 @@ namespace TubeLaserCAM.UI.Views
 
         private void DrawMove(GCodeParser.GCodeMove from, GCodeParser.GCodeMove to, int index)
         {
+            System.Diagnostics.Debug.WriteLine($"DrawMove {index}: " +
+                $"From({from.Y:F3},{from.C:F3}) To({to.Y:F3},{to.C:F3})");
             var line = new Line
             {
                 X1 = 50 + (from.C / 360.0) * 2 * Math.PI * cylinderRadius * scale,
@@ -591,6 +593,17 @@ namespace TubeLaserCAM.UI.Views
                 Y2 = 50 + (cylinderLength / 2 + to.Y) * scale,
                 Tag = "gcode"
             };
+            System.Diagnostics.Debug.WriteLine($"  Canvas: ({line.X1:F1},{line.Y1:F1}) to " +
+                                     $"({line.X2:F1},{line.Y2:F1})");
+            // Kiểm tra xem có nằm trong canvas bounds không
+            double canvasWidth = 2 * Math.PI * cylinderRadius * scale;
+            double canvasHeight = cylinderLength * scale;
+
+            if (line.X1 < 50 || line.X1 > 50 + canvasWidth ||
+                line.Y1 < 50 || line.Y1 > 50 + canvasHeight)
+            {
+                System.Diagnostics.Debug.WriteLine("  WARNING: Start point outside canvas!");
+            }
 
             // Style based on move type
             switch (to.Type)
@@ -805,6 +818,29 @@ namespace TubeLaserCAM.UI.Views
             catch (Exception ex)
             {
                 HandleAnimationError(ex);
+            }
+        }
+
+        private void CompareToolpathWithGCode()
+        {
+            if (toolpaths?.Count > 0 && parsedGCode?.Moves?.Count > 0)
+            {
+                System.Diagnostics.Debug.WriteLine("=== Comparing Original vs Parsed ===");
+
+                // Original toolpath
+                var firstToolpath = toolpaths[0];
+                System.Diagnostics.Debug.WriteLine($"Original toolpath {firstToolpath.EdgeId}:");
+                System.Diagnostics.Debug.WriteLine($"  Points: {firstToolpath.Points.Count}");
+                System.Diagnostics.Debug.WriteLine($"  First: Y={firstToolpath.Points[0].Y:F3}, " +
+                                                 $"C={firstToolpath.Points[0].C:F3}");
+
+                // Parsed G-Code
+                var firstMove = parsedGCode.Moves.FirstOrDefault(m => m.Type == GCodeParser.GCodeMove.MoveType.Cut);
+                if (firstMove != null)
+                {
+                    System.Diagnostics.Debug.WriteLine($"First G-Code cut:");
+                    System.Diagnostics.Debug.WriteLine($"  Y={firstMove.Y:F3}, C={firstMove.C:F3}");
+                }
             }
         }
 
@@ -1094,6 +1130,25 @@ namespace TubeLaserCAM.UI.Views
                                   MessageBoxButton.OK, MessageBoxImage.Error);
                 }
             }
+        }
+
+        private void TestSimpleGCode()
+        {
+            string testGCode = @"; Test Circle
+        G21 ; Metric
+        G90 ; Absolute
+        G0 Y0 C0 ; Start at center
+        G0 Z0
+         M3 S80 ; Laser on
+        G1 Y0 C90 ; Quarter circle
+        G1 Y0 C180 ; Half circle  
+        G1 Y0 C270 ; Three quarters
+        G1 Y0 C360 ; Full circle
+        M5 ; Laser off
+        M30";
+
+            System.Diagnostics.Debug.WriteLine("=== Testing with simple G-Code ===");
+            LoadGCodeForVisualization(testGCode);
         }
 
         private void ScrollViewer_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
