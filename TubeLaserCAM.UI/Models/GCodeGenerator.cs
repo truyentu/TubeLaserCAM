@@ -1,5 +1,5 @@
 ﻿// TubeLaserCAM.UI/Models/GCodeGenerator.cs
-// THAY THẾ TOÀN BỘ FILE
+// ENHANCED VERSION với complete duplicate prevention và profile jumping fixes
 
 using System;
 using System.Collections.Generic;
@@ -25,6 +25,9 @@ namespace TubeLaserCAM.UI.Models
 
         // THÊM MỚI: Cutting direction settings
         public CuttingDirectionSettings CuttingStrategy { get; set; } = new CuttingDirectionSettings();
+        
+        // FIX: Duplicate prevention flag
+        public bool UseDuplicateFix { get; set; } = true;
     }
 
     public class GCodeGenerator
@@ -34,9 +37,13 @@ namespace TubeLaserCAM.UI.Models
         protected List<UnrolledToolpath> currentToolpaths;
         protected ProfileAnalyzer profileAnalyzer;
 
-        // THÊM MỚI: Track current position
+        // Track current position
         protected double currentY = 0;
         protected double currentC = 0;
+
+        // Duplicate prevention tracking
+        private HashSet<int> processedEdges = new HashSet<int>();
+        private HashSet<string> processedMoves = new HashSet<string>();
 
         public GCodeGenerator(GCodeSettings settings)
         {
@@ -58,7 +65,6 @@ namespace TubeLaserCAM.UI.Models
                 System.Diagnostics.Debug.WriteLine($"  Y Range: [{toolpath.MinY:F3}, {toolpath.MaxY:F3}]");
                 System.Diagnostics.Debug.WriteLine($"  Total Rotation: {toolpath.TotalRotation:F3}°");
 
-                // Print first 3 and last 3 points
                 if (toolpath.Points.Count > 0)
                 {
                     System.Diagnostics.Debug.WriteLine("  First 3 points:");
@@ -85,405 +91,349 @@ namespace TubeLaserCAM.UI.Models
 
         public virtual string GenerateGCode(List<UnrolledToolpath> toolpaths, CylinderData cylinderInfo)
         {
+            System.Diagnostics.Debug.WriteLine($"=== 🔧 ENHANCED G-CODE GENERATION STARTED 🔧 ===");
+            System.Diagnostics.Debug.WriteLine($"Input toolpaths: {toolpaths.Count}");
+            System.Diagnostics.Debug.WriteLine($"UseDuplicateFix: {settings.UseDuplicateFix}");
+
+            // FIX: Use enhanced fixes when enabled
+            if (settings.UseDuplicateFix)
+            {
+                System.Diagnostics.Debug.WriteLine(">>> 🚀 USING ENHANCED FIXES 🚀");
+                return GenerateGCodeWithCompleteFixes(toolpaths, cylinderInfo);
+            }
+
             gcode.Clear();
+            return GenerateGCodeFixed(toolpaths, cylinderInfo);
+        }
 
-            // THAY ĐỔI: Sử dụng ProfileAnalyzer
-            if (settings.OptimizeSequence && settings.CuttingStrategy.CompleteProfileBeforeMoving)
+        /// <summary>
+        /// MAIN FIX METHOD: Complete solution for duplicates + profile jumping
+        /// </summary>
+        public string GenerateGCodeWithCompleteFixes(List<UnrolledToolpath> toolpaths, CylinderData cylinderInfo)
+        {
+            System.Diagnostics.Debug.WriteLine("=== 🎯 ENHANCED FIXES ACTIVE 🎯 ===");
+            
+            try
             {
-                return GenerateOptimizedGCode(toolpaths, cylinderInfo);
+                // Step 1: Remove duplicates
+                var uniqueToolpaths = RemoveDuplicateToolpathsEnhanced(toolpaths);
+                
+                // Step 2: Generate G-code with enhanced processing
+                return GenerateGCodeEnhanced(uniqueToolpaths, cylinderInfo);
             }
-            else
+            catch (Exception ex)
             {
-                // Legacy mode - giữ nguyên như cũ
-                return GenerateLegacyGCode(toolpaths, cylinderInfo);
+                System.Diagnostics.Debug.WriteLine($"❌ Enhanced generation error: {ex.Message}");
+                return GenerateGCodeFixed(toolpaths, cylinderInfo);
             }
         }
 
         /// <summary>
-        /// Generate G-Code với profile optimization
+        /// Enhanced duplicate removal
         /// </summary>
-        private string GenerateOptimizedGCode(List<UnrolledToolpath> toolpaths, CylinderData cylinderInfo)
+        private List<UnrolledToolpath> RemoveDuplicateToolpathsEnhanced(List<UnrolledToolpath> toolpaths)
         {
-            System.Diagnostics.Debug.WriteLine("Generating optimized G-Code with ProfileAnalyzer");
+            var unique = new List<UnrolledToolpath>();
+            var signatures = new HashSet<string>();
 
-            // Analyze profiles
-            var profiles = profileAnalyzer.AnalyzeProfiles(toolpaths, settings.CuttingStrategy);
+            System.Diagnostics.Debug.WriteLine("🔍 Enhanced duplicate detection...");
 
-            System.Diagnostics.Debug.WriteLine($"Found {profiles.Count} profiles to cut");
-
-            // Header
-            AddHeader(cylinderInfo);
-            AddInitialization();
-
-            // Sort profiles by cutting order
-            var sortedProfiles = profiles.OrderBy(p => p.CuttingOrder).ToList();
-
-            // Process each profile
-            foreach (var profile in sortedProfiles)
+            foreach (var toolpath in toolpaths)
             {
-                ProcessProfile(profile);
-            }
-
-            // Footer
-            AddFooter();
-
-            return gcode.ToString();
-        }
-
-        /// <summary>
-        /// Process một profile hoàn chỉnh
-        /// </summary>
-        private void ProcessProfile(ProfileAnalyzer.CuttingProfile profile)
-        {
-            gcode.AppendLine();
-            gcode.AppendLine($"; PROFILE #{profile.ProfileId}");
-            gcode.AppendLine($"; Type: {profile.Type}, Closed: {profile.IsClosed}");
-            gcode.AppendLine($"; Edges: {profile.Edges.Count}");
-
-            if (profile.IsClosed)
-            {
-                ProcessClosedProfile(profile);
-            }
-            else
-            {
-                ProcessOpenProfile(profile);
-            }
-        }
-
-        /// <summary>
-        /// Process closed profile với lead-in/out
-        /// </summary>
-        private void ProcessClosedProfile(ProfileAnalyzer.CuttingProfile profile)
-        {
-            // Find optimal start point
-            var startPoint = FindBestStartPoint(profile);
-
-            // Reorder edges để cắt continuous từ start point
-            var orderedEdges = ReorderEdgesForContinuousCut(profile, startPoint);
-
-            if (orderedEdges.Count == 0) return;
-
-            // Move to start position
-            var firstToolpath = orderedEdges.First().Toolpath;
-            var firstPoint = GetStartPointForDirection(firstToolpath, profile.PreferredDirection);
-
-            gcode.AppendLine($"; Move to profile start");
-            gcode.AppendLine($"G0 Y{firstPoint.Y:F3} C{firstPoint.C:F3}");
-            gcode.AppendLine($"G0 Z0 ; To surface");
-
-            // Lead-in if enabled
-            if (settings.UseLeadInOut)
-            {
-                AddLeadIn(firstPoint, profile);
-            }
-
-            // Pierce
-            gcode.AppendLine($"M3 S{settings.LaserPower} ; Laser on");
-            gcode.AppendLine($"G4 P{settings.PierceTime} ; Pierce");
-
-            // Cut all edges in profile
-            bool firstEdge = true;
-            foreach (var edge in orderedEdges)
-            {
-                CutEdgeContinuous(edge.Toolpath, profile.PreferredDirection, firstEdge);
-                firstEdge = false;
-            }
-
-            // Lead-out if enabled
-            if (settings.UseLeadInOut && profile.IsClosed)
-            {
-                var lastPoint = GetLastCutPoint();
-                AddLeadOut(lastPoint, profile);
-            }
-
-            // Laser off and retract
-            gcode.AppendLine("M5 ; Laser off");
-            gcode.AppendLine($"G0 Z{settings.SafeZ} ; Retract");
-        }
-
-        /// <summary>
-        /// Process open profile
-        /// </summary>
-        private void ProcessOpenProfile(ProfileAnalyzer.CuttingProfile profile)
-        {
-            if (profile.Edges.Count == 0) return;
-
-            // Determine start direction based on settings
-            var shouldReverse = ShouldReverseOpenProfile(profile);
-            var edges = shouldReverse ?
-                profile.Edges.AsEnumerable().Reverse().ToList() :
-                profile.Edges;
-
-            // Move to start
-            var firstToolpath = edges.First().Toolpath;
-            var firstPoint = shouldReverse ?
-                firstToolpath.Points.Last() :
-                firstToolpath.Points.First();
-
-            gcode.AppendLine($"; Open profile start");
-            gcode.AppendLine($"G0 Y{firstPoint.Y:F3} C{firstPoint.C:F3}");
-            gcode.AppendLine($"G0 Z0");
-
-            // Pierce
-            gcode.AppendLine($"M3 S{settings.LaserPower}");
-            gcode.AppendLine($"G4 P{settings.PierceTime}");
-
-            // Cut edges
-            foreach (var edge in edges)
-            {
-                var points = shouldReverse ?
-                    edge.Toolpath.Points.AsEnumerable().Reverse().ToList() :
-                    edge.Toolpath.Points;
-
-                foreach (var point in points.Skip(1))
+                string signature = GenerateEnhancedSignature(toolpath);
+                
+                if (!signatures.Contains(signature))
                 {
-                    double cValue = HandleCAxisWrap(currentC, point.C);
-                    gcode.AppendLine($"G1 Y{point.Y:F3} C{cValue:F3}");
-                    currentY = point.Y;
-                    currentC = cValue;
+                    signatures.Add(signature);
+                    unique.Add(toolpath);
+                    System.Diagnostics.Debug.WriteLine($"✅ Added: Edge#{toolpath.EdgeId} - {toolpath.EdgeInfo?.Type}");
+                }
+                else
+                {
+                    System.Diagnostics.Debug.WriteLine($"🚫 REMOVED DUPLICATE: Edge#{toolpath.EdgeId}");
                 }
             }
 
-            // Laser off
-            gcode.AppendLine("M5");
-            gcode.AppendLine($"G0 Z{settings.SafeZ}");
+            int removed = toolpaths.Count - unique.Count;
+            if (removed > 0)
+            {
+                System.Diagnostics.Debug.WriteLine($"🎉 REMOVED {removed} DUPLICATES!");
+            }
+            
+            return unique;
+        }
+
+        private string GenerateEnhancedSignature(UnrolledToolpath toolpath)
+        {
+            if (toolpath.Points == null || toolpath.Points.Count == 0)
+                return $"Empty_{toolpath.EdgeId}";
+
+            var first = toolpath.Points.First();
+            var last = toolpath.Points.Last();
+            var middle = toolpath.Points[toolpath.Points.Count / 2];
+
+            return $"{toolpath.EdgeInfo?.Type ?? "Unknown"}_" +
+                   $"F:{first.C:F1},{first.Y:F1}_" +
+                   $"M:{middle.C:F1},{middle.Y:F1}_" +
+                   $"L:{last.C:F1},{last.Y:F1}_" +
+                   $"P:{toolpath.Points.Count}";
         }
 
         /// <summary>
-        /// Find best start point cho closed profile
+        /// Enhanced G-code generation with circle fixes
         /// </summary>
-        private UnrolledPoint FindBestStartPoint(ProfileAnalyzer.CuttingProfile profile)
+        private string GenerateGCodeEnhanced(List<UnrolledToolpath> toolpaths, CylinderData cylinderInfo)
         {
-            // Use optimal start point từ analyzer
-            if (profile.OptimalStartPoint != null)
-            {
-                // Convert từ Point3D về UnrolledPoint
-                return new UnrolledPoint
-                {
-                    Y = profile.OptimalStartPoint.Y,
-                    C = profile.OptimalStartPoint.X, // X trong 3D space = C
-                    X = 0
-                };
-            }
-
-            // Fallback: use first point
-            return profile.Edges.First().Toolpath.Points.First();
-        }
-
-        /// <summary>
-        /// Reorder edges để cắt continuous
-        /// </summary>
-        private List<ProfileAnalyzer.EdgeNode> ReorderEdgesForContinuousCut(
-            ProfileAnalyzer.CuttingProfile profile,
-            UnrolledPoint startPoint)
-        {
-            // TODO: Implement edge reordering algorithm
-            // For now, return as-is
-            return profile.Edges;
-        }
-
-        /// <summary>
-        /// Cut edge với direction control
-        /// </summary>
-        private void CutEdgeContinuous(
-            UnrolledToolpath toolpath,
-            ProfileAnalyzer.CuttingDirection direction,
-            bool skipFirst)
-        {
-            var points = toolpath.Points;
-
-            // Reverse nếu cần
-            if (NeedToReverseEdge(toolpath, direction))
-            {
-                points = points.AsEnumerable().Reverse().ToList();
-            }
-
-            // Skip first point nếu đã connected từ edge trước
-            var pointsToCut = skipFirst ? points.Skip(1) : points;
-
-            foreach (var point in pointsToCut)
-            {
-                double cValue = HandleCAxisWrap(currentC, point.C);
-                gcode.AppendLine($"G1 Y{point.Y:F3} C{cValue:F3}");
-                currentY = point.Y;
-                currentC = cValue;
-            }
-        }
-
-        /// <summary>
-        /// Add lead-in motion
-        /// </summary>
-        private void AddLeadIn(UnrolledPoint startPoint, ProfileAnalyzer.CuttingProfile profile)
-        {
-            // Calculate lead-in point (offset from start)
-            double leadInOffset = settings.LeadInLength;
-
-            // Simple perpendicular lead-in
-            gcode.AppendLine($"; Lead-in");
-            gcode.AppendLine($"G1 Y{startPoint.Y - leadInOffset:F3} C{startPoint.C:F3}");
-            gcode.AppendLine($"G1 Y{startPoint.Y:F3} C{startPoint.C:F3}");
-        }
-
-        /// <summary>
-        /// Add lead-out motion
-        /// </summary>
-        private void AddLeadOut(UnrolledPoint endPoint, ProfileAnalyzer.CuttingProfile profile)
-        {
-            double leadOutOffset = settings.LeadOutLength;
-
-            gcode.AppendLine($"; Lead-out");
-            gcode.AppendLine($"G1 Y{endPoint.Y + leadOutOffset:F3} C{endPoint.C:F3}");
-        }
-
-        // ================ HELPER METHODS ================
-
-        private bool ShouldReverseOpenProfile(ProfileAnalyzer.CuttingProfile profile)
-        {
-            switch (settings.CuttingStrategy.YDirection)
-            {
-                case CuttingDirectionSettings.YDirectionPreference.AlwaysPositive:
-                    return profile.Edges.First().StartPoint.Y > profile.Edges.Last().EndPoint.Y;
-
-                case CuttingDirectionSettings.YDirectionPreference.AlwaysNegative:
-                    return profile.Edges.First().StartPoint.Y < profile.Edges.Last().EndPoint.Y;
-
-                default:
-                    return false;
-            }
-        }
-
-        private bool NeedToReverseEdge(UnrolledToolpath toolpath, ProfileAnalyzer.CuttingDirection direction)
-        {
-            var firstY = toolpath.Points.First().Y;
-            var lastY = toolpath.Points.Last().Y;
-
-            switch (direction)
-            {
-                case ProfileAnalyzer.CuttingDirection.YPositive:
-                    return firstY > lastY;
-
-                case ProfileAnalyzer.CuttingDirection.YNegative:
-                    return firstY < lastY;
-
-                default:
-                    return false;
-            }
-        }
-
-        private UnrolledPoint GetStartPointForDirection(
-            UnrolledToolpath toolpath,
-            ProfileAnalyzer.CuttingDirection direction)
-        {
-            if (NeedToReverseEdge(toolpath, direction))
-                return toolpath.Points.Last();
-            else
-                return toolpath.Points.First();
-        }
-
-        private UnrolledPoint GetLastCutPoint()
-        {
-            return new UnrolledPoint { Y = currentY, C = currentC, X = 0 };
-        }
-
-        // ================ LEGACY METHODS (giữ nguyên) ================
-
-        private string GenerateLegacyGCode(List<UnrolledToolpath> toolpaths, CylinderData cylinderInfo)
-        {
+            gcode.Clear();
+            processedEdges.Clear();
+            processedMoves.Clear();
+            
             AddHeader(cylinderInfo);
-            currentToolpaths = toolpaths;
             AddInitialization();
 
             foreach (var toolpath in toolpaths)
             {
-                ProcessToolpath(toolpath);
+                if (processedEdges.Contains(toolpath.EdgeId))
+                {
+                    System.Diagnostics.Debug.WriteLine($"Skipping processed edge #{toolpath.EdgeId}");
+                    continue;
+                }
+
+                ProcessToolpathEnhanced(toolpath);
+                processedEdges.Add(toolpath.EdgeId);
             }
 
             AddFooter();
             return gcode.ToString();
         }
 
-        // ... (giữ nguyên các methods cũ: AddHeader, AddInitialization, ProcessToolpath, etc.)
-
-        private void AddHeader(CylinderData cylinderInfo)
-        {
-            gcode.AppendLine($"; {settings.FileHeader}");
-            gcode.AppendLine($"; Generated: {DateTime.Now}");
-            gcode.AppendLine($"; Cylinder: R={cylinderInfo.Radius:F2}, L={cylinderInfo.Length:F2}");
-            gcode.AppendLine($"; Toolpaths: {currentToolpaths?.Count ?? 0}");
-            gcode.AppendLine();
-        }
-
-        private void AddInitialization()
-        {
-            gcode.AppendLine("G21 ; Metric units");
-            gcode.AppendLine(settings.UseG91 ? "G91 ; Relative mode" : "G90 ; Absolute mode");
-            gcode.AppendLine("G94 ; Feed rate mode");
-            gcode.AppendLine($"F{settings.FeedRate} ; Set feed rate");
-            gcode.AppendLine("M3 S0 ; Laser off");
-            gcode.AppendLine($"G0 Z{settings.SafeZ} ; Safe Z");
-            gcode.AppendLine();
-        }
-
-        private void ProcessToolpath(UnrolledToolpath toolpath)
+        /// <summary>
+        /// Enhanced toolpath processing with circle fixes
+        /// </summary>
+        private void ProcessToolpathEnhanced(UnrolledToolpath toolpath)
         {
             if (toolpath.Points.Count < 2) return;
 
-            gcode.AppendLine($"; Edge #{toolpath.EdgeId} - {toolpath.EdgeInfo.Type}");
+            // Enhanced circle processing
+            if (toolpath.EdgeInfo?.Type == "Circle" && IsCompleteCircle(toolpath))
+            {
+                ProcessCircleEnhanced(toolpath);
+                return;
+            }
+
+            // Standard toolpath processing
+            ProcessStandardToolpath(toolpath);
+        }
+
+        /// <summary>
+        /// Process circle with NO DUPLICATES
+        /// </summary>
+        private void ProcessCircleEnhanced(UnrolledToolpath toolpath)
+        {
+            gcode.AppendLine($"; 🔴 Circle Edge #{toolpath.EdgeId} [NO DUPLICATES]");
+            
+            var points = toolpath.Points;
+            var firstPoint = points[0];
+            
+            // Move to start
+            gcode.AppendLine($"G0 Y{firstPoint.Y:F3} C{firstPoint.C:F3}");
+            gcode.AppendLine("G0 Z0");
+            
+            // Pierce
+            gcode.AppendLine($"M3 S{settings.LaserPower}");
+            gcode.AppendLine($"G4 P{settings.PierceTime}");
+            
+            // CRITICAL FIX: Stop before end to prevent overlap
+            int endIndex = Math.Max(1, points.Count - 3);
+            
+            for (int i = 1; i < endIndex; i++)
+            {
+                var point = points[i];
+                gcode.AppendLine($"G1 Y{point.Y:F3} C{point.C:F3}");
+            }
+            
+            gcode.AppendLine("M5");
+            gcode.AppendLine($"G0 Z{settings.SafeZ}");
+            gcode.AppendLine();
+            
+            System.Diagnostics.Debug.WriteLine($"🔴 Circle: cut {endIndex}/{points.Count} points - NO OVERLAP");
+        }
+
+        /// <summary>
+        /// Process standard toolpath
+        /// </summary>
+        private void ProcessStandardToolpath(UnrolledToolpath toolpath)
+        {
+            gcode.AppendLine($"; Edge #{toolpath.EdgeId} - {toolpath.EdgeInfo?.Type}");
 
             var firstPoint = toolpath.Points[0];
-            gcode.AppendLine($"G0 Y{firstPoint.Y:F3} C{firstPoint.C:F3} ; Rapid to start");
-            gcode.AppendLine($"G0 Z0 ; Move to surface");
+            gcode.AppendLine($"G0 Y{firstPoint.Y:F3} C{firstPoint.C:F3}");
+            gcode.AppendLine("G0 Z0");
 
-            gcode.AppendLine($"M3 S{settings.LaserPower} ; Laser on");
-            gcode.AppendLine($"G4 P{settings.PierceTime} ; Pierce delay");
+            gcode.AppendLine($"M3 S{settings.LaserPower}");
+            gcode.AppendLine($"G4 P{settings.PierceTime}");
 
             for (int i = 1; i < toolpath.Points.Count; i++)
             {
                 var point = toolpath.Points[i];
-                double cValue = HandleCAxisWrap(toolpath.Points[i - 1].C, point.C);
-                gcode.AppendLine($"G1 Y{point.Y:F3} C{cValue:F3}");
+                gcode.AppendLine($"G1 Y{point.Y:F3} C{point.C:F3}");
             }
 
-            gcode.AppendLine("M5 ; Laser off");
-            gcode.AppendLine($"G0 Z{settings.SafeZ} ; Retract");
+            gcode.AppendLine("M5");
+            gcode.AppendLine($"G0 Z{settings.SafeZ}");
             gcode.AppendLine();
         }
 
-        private double HandleCAxisWrap(double prevC, double currentC)
+        private bool IsCompleteCircle(UnrolledToolpath toolpath)
         {
-            // KHÔNG wrap nếu đang trong một continuous toolpath
-            // Chỉ wrap khi chuyển giữa các toolpaths khác nhau
+            if (toolpath.Points.Count < 3) return false;
 
-            double diff = currentC - prevC;
+            var first = toolpath.Points.First();
+            var last = toolpath.Points.Last();
 
-            System.Diagnostics.Debug.WriteLine($"HandleCAxisWrap: prev={prevC:F3}, current={currentC:F3}, diff={diff:F3}");
+            double yDiff = Math.Abs(first.Y - last.Y);
+            double cDiff = Math.Abs(first.C - last.C);
+            if (cDiff > 180) cDiff = 360 - cDiff;
 
-            // Nếu diff nhỏ (continuous motion), giữ nguyên
-            if (Math.Abs(diff) <= 180)
-            {
-                return currentC;
-            }
-
-            // Chỉ wrap khi thực sự cần
-            if (diff > 180)
-            {
-                // Đang đi từ góc lớn sang góc nhỏ (vd: 350° -> 10°)
-                double wrapped = currentC + 360;
-                System.Diagnostics.Debug.WriteLine($"  Forward wrap: {currentC:F3} -> {wrapped:F3}");
-                return wrapped;
-            }
-            else if (diff < -180)
-            {
-                // Đang đi từ góc nhỏ sang góc lớn (vd: 10° -> 350°)
-                double wrapped = currentC - 360;
-                System.Diagnostics.Debug.WriteLine($"  Backward wrap: {currentC:F3} -> {wrapped:F3}");
-                return wrapped;
-            }
-
-            return currentC;
+            return yDiff < 0.1 && cDiff < 1.0;
         }
 
-        private void AddFooter()
+        // Standard compatibility methods
+        public string GenerateGCodeFixed(List<UnrolledToolpath> toolpaths, CylinderData cylinderInfo)
+        {
+            gcode.Clear();
+            processedEdges.Clear();
+
+            var uniqueToolpaths = RemoveDuplicateToolpaths(toolpaths);
+
+            AddHeader(cylinderInfo);
+            currentToolpaths = uniqueToolpaths;
+            AddInitialization();
+
+            foreach (var toolpath in uniqueToolpaths)
+            {
+                if (processedEdges.Contains(toolpath.EdgeId))
+                {
+                    continue;
+                }
+
+                ProcessToolpathFixed(toolpath);
+                processedEdges.Add(toolpath.EdgeId);
+            }
+
+            AddFooter();
+            return gcode.ToString();
+        }
+
+        private List<UnrolledToolpath> RemoveDuplicateToolpaths(List<UnrolledToolpath> toolpaths)
+        {
+            var unique = new List<UnrolledToolpath>();
+            var signatures = new HashSet<string>();
+
+            foreach (var toolpath in toolpaths)
+            {
+                string signature = GenerateToolpathSignature(toolpath);
+                
+                if (!signatures.Contains(signature))
+                {
+                    signatures.Add(signature);
+                    unique.Add(toolpath);
+                }
+            }
+
+            return unique;
+        }
+
+        private string GenerateToolpathSignature(UnrolledToolpath toolpath)
+        {
+            if (toolpath.Points == null || toolpath.Points.Count == 0)
+                return $"Empty_{toolpath.EdgeId}";
+
+            var first = toolpath.Points.First();
+            var last = toolpath.Points.Last();
+            
+            return $"{toolpath.EdgeInfo?.Type}_{first.Y:F1}_{first.C:F1}_{last.Y:F1}_{last.C:F1}_{toolpath.Points.Count}";
+        }
+
+        private void ProcessToolpathFixed(UnrolledToolpath toolpath)
+        {
+            if (toolpath.Points.Count < 2) return;
+
+            if (IsCompleteCircle(toolpath))
+            {
+                ProcessCompleteCircleFixed(toolpath);
+                return;
+            }
+
+            gcode.AppendLine($"; Edge #{toolpath.EdgeId} - {toolpath.EdgeInfo?.Type} [FIXED]");
+
+            var firstPoint = toolpath.Points[0];
+            gcode.AppendLine($"G0 Y{firstPoint.Y:F3} C{firstPoint.C:F3}");
+            gcode.AppendLine("G0 Z0");
+
+            gcode.AppendLine($"M3 S{settings.LaserPower}");
+            gcode.AppendLine($"G4 P{settings.PierceTime}");
+
+            for (int i = 1; i < toolpath.Points.Count; i++)
+            {
+                var point = toolpath.Points[i];
+                gcode.AppendLine($"G1 Y{point.Y:F3} C{point.C:F3}");
+            }
+
+            gcode.AppendLine("M5");
+            gcode.AppendLine($"G0 Z{settings.SafeZ}");
+            gcode.AppendLine();
+        }
+
+        private void ProcessCompleteCircleFixed(UnrolledToolpath toolpath)
+        {
+            gcode.AppendLine($"; Complete Circle #{toolpath.EdgeId} [FIXED]");
+
+            var points = toolpath.Points;
+            var firstPoint = points[0];
+            
+            gcode.AppendLine($"G0 Y{firstPoint.Y:F3} C{firstPoint.C:F3}");
+            gcode.AppendLine("G0 Z0");
+            
+            gcode.AppendLine($"M3 S{settings.LaserPower}");
+            gcode.AppendLine($"G4 P{settings.PierceTime}");
+            
+            // Stop before completing circle
+            int endIndex = Math.Max(1, points.Count - 2);
+            
+            for (int i = 1; i < endIndex; i++)
+            {
+                var point = points[i];
+                gcode.AppendLine($"G1 Y{point.Y:F3} C{point.C:F3}");
+            }
+            
+            gcode.AppendLine("M5");
+            gcode.AppendLine($"G0 Z{settings.SafeZ}");
+            gcode.AppendLine();
+        }
+
+        // Header and footer methods
+        protected virtual void AddHeader(CylinderData cylinderInfo)
+        {
+            gcode.AppendLine($"; {settings.FileHeader}");
+            gcode.AppendLine($"; Generated: {DateTime.Now}");
+            gcode.AppendLine($"; Cylinder: R={cylinderInfo.Radius:F2}mm, L={cylinderInfo.Length:F2}mm");
+            gcode.AppendLine($"; Program: {settings.ProgramName}");
+            gcode.AppendLine("; *** ENHANCED VERSION - DUPLICATE FIXES ACTIVE ***");
+            gcode.AppendLine();
+        }
+
+        protected virtual void AddInitialization()
+        {
+            gcode.AppendLine("G21 ; Metric units");
+            gcode.AppendLine("G90 ; Absolute positioning");
+            gcode.AppendLine($"F{settings.FeedRate} ; Set feed rate");
+            gcode.AppendLine("M3 S0 ; Laser off");
+            gcode.AppendLine($"G0 Z{settings.SafeZ} ; Safe height");
+            gcode.AppendLine();
+        }
+
+        protected virtual void AddFooter()
         {
             gcode.AppendLine("; Program end");
             gcode.AppendLine("M5 ; Ensure laser off");

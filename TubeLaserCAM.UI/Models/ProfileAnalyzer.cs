@@ -696,7 +696,7 @@ namespace TubeLaserCAM.UI.Models
 
             // Find connections from current node
             var outgoingConnections = connections
-                .Where(c => c.FromEdgeId == currentNode.EdgeId && c.IsSmooth)
+                .Where(c => c.FromEdgeId == currentNode.EdgeId) // Allow traversing non-smooth connections to find loops with corners
                 .ToList();
 
             foreach (var conn in outgoingConnections)

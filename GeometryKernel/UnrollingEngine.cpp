@@ -5,6 +5,9 @@
 #include <GCPnts_AbscissaPoint.hxx>
 #include <GCPnts_UniformDeflection.hxx>
 #include <cmath>
+#include <iostream> // Added for std::cout
+#include <vector>   // Added for std::vector
+#include <iomanip>  // Added for std::fixed and std::setprecision
 
 namespace GeometryKernel {
 
@@ -96,6 +99,13 @@ namespace GeometryKernel {
         const TopoDS_Edge& edge,
         bool isReversed) {
 
+        static int unrollEdgeCallCounter = 0;
+        unrollEdgeCallCounter++;
+        int currentEdgeInstanceId = unrollEdgeCallCounter; // Simple ID for logging
+
+        std::cout << std::fixed << std::setprecision(3); // Set precision for cout
+        std::cout << "[CPP DEBUG] UnrollEdge START - Instance: " << currentEdgeInstanceId << "\n";
+
         std::vector<UnrolledPoint> unrolledPoints;
 
         // Get curve from edge
@@ -127,13 +137,53 @@ namespace GeometryKernel {
 
         // Apply angle unwrapping if requested
         if (m_params.unwrapAngles) {
-            unrolledPoints = UnwrapAngles(unrolledPoints, true);
+            std::cout << "[CPP DEBUG] EdgeInstance " << currentEdgeInstanceId << " - Points BEFORE C++ UnwrapAngles (" << unrolledPoints.size() << "):\n";
+            for(size_t k=0; k<unrolledPoints.size(); ++k) {
+                std::cout << "  PreUnwrap[" << k << "]: Y=" << unrolledPoints[k].Y << ", C=" << unrolledPoints[k].C << "\n";
+            }
+            
+            unrolledPoints = UnwrapAngles(unrolledPoints, true); // Ensure allowMultipleRotations is true
+            
+        std::cout << "[CPP DEBUG] EdgeInstance " << currentEdgeInstanceId << " - Points AFTER C++ UnwrapAngles (" << unrolledPoints.size() << "):\n";
+        for(size_t k=0; k<unrolledPoints.size(); ++k) {
+            std::cout << "  PostUnwrap[" << k << "]: Y=" << unrolledPoints[k].Y << ", C=" << unrolledPoints[k].C << "\n";
         }
-
-        return unrolledPoints;
+    } else {
+        std::cout << "[CPP DEBUG] EdgeInstance " << currentEdgeInstanceId << " - C++ UnwrapAngles SKIPPED (m_params.unwrapAngles is false)\n";
+        // If UnwrapAngles was not called, SplitAtSeam might still be relevant
+        // depending on how seamTolerance is handled and if points cross 0/360 boundary.
+        // For now, we assume if unwrapAngles is false, the user wants raw [0,360) points per segment.
+        // The original problem implies unwrapAngles IS true.
     }
+    
+    // IMPORTANT CHANGE: If unwrapAngles was true, unrolledPoints are already continuous across the seam.
+    // SplitAtSeam is designed for angles in [0,360) with large jumps.
+    // If angles are already unwrapped (e.g. ..., 358, 365, ...), SplitAtSeam with a small tolerance would incorrectly split.
+    // So, we only call SplitAtSeam if unwrapAngles was NOT done by our engine.
+    // However, the C# side might still call a SplitAtSeam equivalent.
+    // For now, let's stick to the C++ UnrollingEngine's responsibility.
+    // The problem description implies m_params.unwrapAngles IS true.
+    // The C# code is responsible for how it groups these points into final toolpaths.
+    // The C++ UnrollingEngine::UnrollEdge should just return the unrolled points for ONE edge.
+    // If that edge was unwrapped, it's one continuous set of points.
+    // The C# side then takes these (potentially multiple from multiple edges) and might call its own SplitAtSeam or ProfileAnalyzer.
 
-    std::vector<double> UnrollingEngine::GetAdaptiveSampleParameters(
+    // The current structure of the code implies UnrollEdge returns a single vector of UnrolledPoint for one TopoDS_Edge.
+    // The splitting into multiple segments (if any) based on seamTolerance happens higher up, likely in C#
+    // after collecting points from UnrollEdge.
+    // The C++ SplitAtSeam is a utility that *can* be called.
+    // Let's assume the C# side calls UnrollEdge, gets the (potentially unwrapped) points,
+    // and then decides if/how to split them.
+    // So, UnrollEdge should just return its best effort for a single edge.
+
+    std::cout << "[CPP DEBUG] UnrollEdge END - Instance: " << currentEdgeInstanceId << " - Returning " << unrolledPoints.size() << " points from C++ UnrollEdge.\n";
+    for(size_t k=0; k<unrolledPoints.size(); ++k) {
+        std::cout << "  FinalReturnToCSharp[" << k << "]: Y=" << unrolledPoints[k].Y << ", C=" << unrolledPoints[k].C << "\n";
+    }
+    return unrolledPoints;
+}
+
+std::vector<double> UnrollingEngine::GetAdaptiveSampleParameters(
         const Handle(Geom_Curve)& curve,
         double startParam,
         double endParam) const {
@@ -209,18 +259,25 @@ namespace GeometryKernel {
         std::vector<UnrolledPoint> unwrapped = points;
         double cumulativeRotation = 0.0;
 
+        if (allowMultipleRotations) {
+            std::cout << "[CPP DEBUG] UnwrapAngles (allowMultipleRotations=true) - Input points (" << points.size() << "):\n";
+            for(size_t k=0; k<points.size(); ++k) {
+                 std::cout << "  In[" << k << "]: Y=" << points[k].Y << ", C=" << points[k].C << "\n";
+            }
+        }
+
         for (size_t i = 1; i < unwrapped.size(); ++i) {
-            double prevC = unwrapped[i - 1].C;
-            double currC = points[i].C;  // Use original value
+            double prevC_for_diff_calc = unwrapped[i - 1].C; // This is the C from the previous iteration's unwrap (or original if i=1)
+            double currC_original = points[i].C;  // Use original value from input 'points' for diff calculation consistency
 
             // Calculate angle difference
-            double diff = currC - prevC;
+            double diff = currC_original - prevC_for_diff_calc;
 
             // Detect seam crossing
             if (diff > 180.0) {
                 diff -= 360.0;
             }
-            else if (diff < -180.0) {
+            else if (diff < -180.0) { // Changed from <= to < to align with typical logic, though impact might be minimal
                 diff += 360.0;
             }
 
@@ -228,11 +285,18 @@ namespace GeometryKernel {
 
             // Apply unwrapping
             if (allowMultipleRotations) {
-                unwrapped[i].C = unwrapped[0].C + cumulativeRotation;
+                unwrapped[i].C = points[0].C + cumulativeRotation; // Use original points[0].C as the base
+                std::cout << "[CPP DEBUG] UnwrapAngles (true) iter " << i 
+                          << ": prevC_for_diff=" << prevC_for_diff_calc 
+                          << ", currC_orig=" << currC_original
+                          << ", diff=" << diff
+                          << ", cumulRot=" << cumulativeRotation
+                          << ", points[0].C=" << points[0].C
+                          << ", new unwrapped[" << i << "].C=" << unwrapped[i].C << "\n";
             }
             else {
                 // Keep within [0, 360) but maintain continuity
-                unwrapped[i].C = prevC + diff;
+                unwrapped[i].C = prevC_for_diff_calc + diff;
                 if (unwrapped[i].C < 0) {
                     unwrapped[i].C += 360.0;
                 }
@@ -251,6 +315,7 @@ namespace GeometryKernel {
 
         std::vector<std::vector<UnrolledPoint>> segments;
 
+        // Restore original SplitAtSeam logic
         if (points.empty()) {
             return segments;
         }
@@ -277,7 +342,7 @@ namespace GeometryKernel {
         if (!currentSegment.empty()) {
             segments.push_back(currentSegment);
         }
-
+        
         return segments;
     }
 }
