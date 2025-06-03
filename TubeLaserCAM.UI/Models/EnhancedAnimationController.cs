@@ -278,8 +278,7 @@ namespace TubeLaserCAM.UI.Models
                          $"Y: {position.Y:F2}mm\n" +
                          $"C: {position.C:F1}°\n" +
                          $"Laser: {(position.LaserOn ? "ON" : "OFF")}\n" +
-                         $"Power: {position.LaserPower}%\n" +
-                         $"Feed: {position.FeedRate:F0}mm/min";
+                         $"Power: {position.LaserPower}%\n";
 
             toolGroup.ToolTip = toolTip;
 

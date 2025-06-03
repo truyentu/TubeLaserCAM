@@ -20,6 +20,7 @@ using static TubeLaserCAM.UI.Models.GeometryModel;
 using TubeLaserCAM.UI.Views;
 using Point3D = System.Windows.Media.Media3D.Point3D;
 using Vector3D = System.Windows.Media.Media3D.Vector3D;
+using System.Threading.Tasks;
 
 namespace TubeLaserCAM.UI.ViewModels
 {
@@ -73,7 +74,9 @@ namespace TubeLaserCAM.UI.ViewModels
         private GCodeSettings gcodeSettings = new GCodeSettings();
         private int? hoveredEdgeId;
         private DateTime lastHoverTime = DateTime.MinValue;
-        private const double HOVER_DEBOUNCE_MS = 5; // 100ms debounce
+        private int? lastHoveredEdgeId = null;
+        private List<int> lastHoveredProfileEdges = new List<int>();
+        private const double HOVER_DEBOUNCE_MS = 50;
         private List<int> hoveredProfileEdges = new List<int>();
         private bool isCameraLocked = false;
 
@@ -504,11 +507,12 @@ namespace TubeLaserCAM.UI.ViewModels
                 var viewport = FindViewport3D(args.Source);
                 if (viewport == null) return;
 
-                // Debounce hover để tránh flicker
-                if ((DateTime.Now - lastHoverTime).TotalMilliseconds < HOVER_DEBOUNCE_MS)
+                // Improved debouncing
+                var currentTime = DateTime.Now;
+                if ((currentTime - lastHoverTime).TotalMilliseconds < HOVER_DEBOUNCE_MS)
                     return;
 
-                lastHoverTime = DateTime.Now;
+                lastHoverTime = currentTime;
 
                 var mousePos = args.GetPosition(viewport);
                 var hitResult = GetHitTestResult(viewport, mousePos);
@@ -517,36 +521,71 @@ namespace TubeLaserCAM.UI.ViewModels
                 {
                     var nearestEdgeId = FindEdgeIdFromHitResult(hitResult);
 
+                    // THÊM: Quick check to avoid redundant operations
+                    if (nearestEdgeId == lastHoveredEdgeId)
+                        return; // Already hovering same edge
+
                     if (nearestEdgeId.HasValue && hoveredEdgeId != nearestEdgeId)
                     {
-                        ClearHoveredProfile();
+                        // Clear previous hover
+                        ClearHoveredProfileQuick();
+
                         hoveredEdgeId = nearestEdgeId;
+                        lastHoveredEdgeId = nearestEdgeId;
 
-                        // Single edge hover only (disable profile hover for now)
-                        geometryModel.SetEdgeHovered(nearestEdgeId.Value, true);
-                        hoveredProfileEdges.Add(nearestEdgeId.Value);
-
-                        var edgeInfo = geometryModel.GetEdgeInfo(nearestEdgeId.Value);
-                        if (edgeInfo != null)
+                        // THÊM: Async hover để không block UI
+                        Task.Run(() =>
                         {
-                            StatusText = $"Hovering Edge #{nearestEdgeId.Value} - Type: {edgeInfo.EdgeInfo.Type}";
-                        }
+                            Application.Current.Dispatcher.BeginInvoke(new Action(() =>
+                            {
+                                SetHoverHighlight(nearestEdgeId.Value);
+                            }), System.Windows.Threading.DispatcherPriority.Background);
+                        });
                     }
                 }
                 else
                 {
-                    // Clear hover only if really moved away
-                    if (hoveredEdgeId.HasValue &&
-                        (DateTime.Now - lastHoverTime).TotalMilliseconds > 200)
+                    if (hoveredEdgeId.HasValue)
                     {
-                        ClearHoveredProfile();
+                        ClearHoveredProfileQuick();
                         hoveredEdgeId = null;
+                        lastHoveredEdgeId = null;
                         UpdateStatusText();
                     }
                 }
             }
         }
 
+
+        private void ClearHoveredProfileQuick()
+        {
+            // Batch clear operations
+            Application.Current.Dispatcher.BeginInvoke(new Action(() =>
+            {
+                foreach (int id in lastHoveredProfileEdges)
+                {
+                    geometryModel.SetEdgeHovered(id, false);
+                }
+                lastHoveredProfileEdges.Clear();
+
+                if (hoveredEdgeId.HasValue)
+                {
+                    geometryModel.SetEdgeHovered(hoveredEdgeId.Value, false);
+                }
+            }), System.Windows.Threading.DispatcherPriority.Background);
+        }
+
+        private void SetHoverHighlight(int edgeId)
+        {
+            geometryModel.SetEdgeHovered(edgeId, true);
+            lastHoveredProfileEdges.Add(edgeId);
+
+            var edgeInfo = geometryModel.GetEdgeInfo(edgeId);
+            if (edgeInfo != null)
+            {
+                StatusText = $"Hovering Edge #{edgeId} - Type: {edgeInfo.EdgeInfo.Type}";
+            }
+        }
         private void ClearHoveredProfile()
         {
             // Clear all hovered edges

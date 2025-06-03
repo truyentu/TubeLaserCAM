@@ -68,6 +68,7 @@
     <Compile Include="Converters\CountToVisibilityConverter.cs" />
     <Compile Include="Converters\EnumBooleanConverter.cs" />
     <Compile Include="Converters\FilterParametersConverter.cs" />
+    <Compile Include="Models\EnhancedAnimationController.cs" />
     <Compile Include="Models\GCodeGenerator.cs" />
     <Compile Include="Models\GCodeParser.cs" />
     <Compile Include="Models\ProfileAnalyzer.cs" />

@@ -32,6 +32,8 @@ namespace TubeLaserCAM.UI.Views
         private double cylinderLength = 200; 
         private DispatcherTimer animationTimer;
         private bool isInitialized = false;
+        private EnhancedAnimationController enhancedAnimationController;
+        private bool useEnhancedAnimation = true; // Flag để bật/tắt enhanced mode
 
 
         public Unrolled2DView(List<UnrolledToolpath> unrolledToolpaths, CylinderData cylinderInfo)
@@ -81,6 +83,12 @@ namespace TubeLaserCAM.UI.Views
 
                 // Ensure minimum scale
                 scale = Math.Max(scale, 0.1);
+                enhancedAnimationController = new EnhancedAnimationController(
+                    drawingCanvas,
+                    cylinderRadius,
+                    cylinderLength,
+                    scale
+                 );
 
                 System.Diagnostics.Debug.WriteLine($"Scale calculated: {scale}, Circumference: {circumference}");
 
@@ -876,7 +884,7 @@ namespace TubeLaserCAM.UI.Views
                 currentAnimationIndex = 0;
                 isAnimating = true;
 
-                // Update UI với Dispatcher để tránh cross-thread issues
+                // Update UI
                 Dispatcher.Invoke(() =>
                 {
                     btnPlay.IsEnabled = false;
@@ -884,21 +892,41 @@ namespace TubeLaserCAM.UI.Views
                     btnStop.IsEnabled = true;
                 });
 
-                // Clear previous animation
-                ClearAnimationLayer();
+                // THÊM MỚI: Clear animation layers based on mode
+                if (useEnhancedAnimation && enhancedAnimationController != null)
+                {
+                    // Enhanced mode: clear current but preserve completed cuts
+                    enhancedAnimationController.ClearCurrentAnimation();
+                }
+                else
+                {
+                    // Standard mode: clear all
+                    ClearAnimationLayer();
+                }
 
-                // Setup timer với error handling
+                // Setup timer
                 if (animationTimer != null)
                 {
                     animationTimer.Stop();
                     animationTimer.Tick -= AnimationTimer_Tick;
+                    animationTimer.Tick -= AnimationTimer_Tick_Enhanced; // Remove enhanced handler if exists
                 }
 
                 animationTimer = new DispatcherTimer
                 {
                     Interval = TimeSpan.FromMilliseconds(Math.Max(20, 100 / speedSlider.Value))
                 };
-                animationTimer.Tick += AnimationTimer_Tick_Safe;
+
+                // THÊM MỚI: Choose animation handler based on mode
+                if (useEnhancedAnimation && enhancedAnimationController != null)
+                {
+                    animationTimer.Tick += AnimationTimer_Tick_Enhanced;
+                }
+                else
+                {
+                    animationTimer.Tick += AnimationTimer_Tick_Safe;
+                }
+
                 animationTimer.Start();
             }
             catch (Exception ex)
@@ -942,6 +970,58 @@ namespace TubeLaserCAM.UI.Views
             }
         }
 
+        /// <summary>
+        /// Enhanced animation timer tick với completed cuts tracking
+        /// </summary>
+        private void AnimationTimer_Tick_Enhanced(object sender, EventArgs e)
+        {
+            try
+            {
+                if (!isAnimating || currentAnimationIndex >= parsedGCode.Moves.Count - 1)
+                {
+                    StopAnimation();
+                    return;
+                }
+
+                var currentMove = parsedGCode.Moves[currentAnimationIndex];
+                var nextMove = parsedGCode.Moves[currentAnimationIndex + 1];
+
+                // Skip non-movement commands quickly
+                if (nextMove.Type == GCodeParser.GCodeMove.MoveType.Pierce ||
+                    nextMove.Type == GCodeParser.GCodeMove.MoveType.LaserOff)
+                {
+                    currentAnimationIndex++;
+                    return;
+                }
+
+
+
+                // ENHANCED: Use EnhancedAnimationController
+                enhancedAnimationController.AnimateMoveEnhanced(currentMove, nextMove, currentAnimationIndex);
+                enhancedAnimationController.UpdateToolPosition(nextMove);
+
+                // Update progress với enhanced statistics
+                double progress = (double)currentAnimationIndex / (parsedGCode.Moves.Count - 1) * 100;
+                animationProgress.Value = progress;
+
+                // Enhanced status với completed cuts info
+                var stats = enhancedAnimationController.GetStats();
+                txtAnimationStatus.Text = $"Move {currentAnimationIndex + 1}/{parsedGCode.Moves.Count} | " +
+                                         $"Completed: {stats.CompletedCuts} cuts ({stats.TotalCutLength:F1}mm) | " +
+                                         $"Y: {nextMove.Y:F2}, C: {nextMove.C:F1}°";
+                if (txtCutStats != null)
+                {
+                    txtCutStats.Text = $"Cuts: {stats.CompletedCuts} | Length: {stats.TotalCutLength:F1}mm";
+                }
+
+                currentAnimationIndex++;
+            }
+            catch (Exception ex)
+            {
+                HandleAnimationError(ex);
+            }
+        }
+
 
         private void PauseAnimation_Click(object sender, RoutedEventArgs e)
         {
@@ -964,6 +1044,7 @@ namespace TubeLaserCAM.UI.Views
             {
                 animationTimer.Stop();
                 animationTimer.Tick -= AnimationTimer_Tick;
+                animationTimer.Tick -= AnimationTimer_Tick_Enhanced; // Remove enhanced handler
             }
 
             isAnimating = false;
@@ -974,8 +1055,29 @@ namespace TubeLaserCAM.UI.Views
             btnPause.IsEnabled = false;
             btnStop.IsEnabled = false;
 
-            // Clear animation
-            ClearAnimationLayer();
+            // THÊM MỚI: Clear animation based on mode
+            if (useEnhancedAnimation && enhancedAnimationController != null)
+            {
+                // Optional: Ask user if they want to clear completed cuts
+                var result = MessageBox.Show(
+                    "Do you want to clear completed cuts visualization?",
+                    "Clear Completed Cuts",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Question);
+
+                if (result == MessageBoxResult.Yes)
+                {
+                    enhancedAnimationController.ClearAllAnimation();
+                }
+                else
+                {
+                    enhancedAnimationController.ClearCurrentAnimation();
+                }
+            }
+            else
+            {
+                ClearAnimationLayer();
+            }
 
             // Reset progress
             animationProgress.Value = 0;
@@ -1057,6 +1159,30 @@ namespace TubeLaserCAM.UI.Views
             FadeOldAnimationLines();
         }
 
+        private void EnhancedMode_Changed(object sender, RoutedEventArgs e)
+        {
+            useEnhancedAnimation = chkEnhancedMode.IsChecked ?? false;
+
+            // Clear all animations when switching modes
+            if (enhancedAnimationController != null)
+            {
+                enhancedAnimationController.ClearAllAnimation();
+            }
+            ClearAnimationLayer();
+
+            // Update status
+            txtAnimationStatus.Text = useEnhancedAnimation ?
+                "Enhanced Mode: Completed cuts will remain visible" :
+                "Standard Mode: All cuts fade after animation";
+        }
+        private void ClearCompleted_Click(object sender, RoutedEventArgs e)
+        {
+            if (enhancedAnimationController != null)
+            {
+                enhancedAnimationController.ClearAllAnimation();
+                txtAnimationStatus.Text = "Cleared all completed cuts";
+            }
+        }
         private void UpdateToolIndicator(GCodeParser.GCodeMove position)
         {
             // Remove old tool
@@ -1330,6 +1456,13 @@ namespace TubeLaserCAM.UI.Views
 
         private void ClearAnimationLayer()
         {
+            // THÊM NULL CHECK
+            if (drawingCanvas == null)
+            {
+                System.Diagnostics.Debug.WriteLine("Warning: drawingCanvas is null in ClearAnimationLayer");
+                return;
+            }
+
             var toRemove = drawingCanvas.Children
                 .OfType<FrameworkElement>()
                 .Where(e => e.Tag?.ToString() == "animation" ||

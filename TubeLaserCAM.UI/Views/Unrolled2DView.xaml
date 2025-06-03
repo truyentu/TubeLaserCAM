@@ -96,6 +96,16 @@
 
             <Separator/>
 
+            <!-- Sau Stop button -->
+            <Separator/>
+            <Button Name="btnClearCompleted" 
+        Content="Clear Completed" 
+        Click="ClearCompleted_Click"
+        Padding="10,5" 
+        Margin="5,0"
+        Background="LightCoral"
+        ToolTip="Clear all completed cut visualizations"/>
+
             <!-- Speed Control -->
             <Label Content="Speed:"/>
             <Slider Name="speedSlider" Width="100" 
@@ -117,6 +127,38 @@
                        Foreground="DarkBlue"
                        FontWeight="Bold"
                        MinWidth="200"/>
+            <!-- Trong Animation Toolbar, sau Speed control, trước Legend -->
+            <Separator/>
+
+            <!-- Enhanced Mode Toggle -->
+            <CheckBox Name="chkEnhancedMode" 
+          Content="Enhanced Mode" 
+          IsChecked="True"
+          VerticalAlignment="Center"
+          Margin="10,0"
+          ToolTip="Enable enhanced animation with completed cuts tracking"
+          Checked="EnhancedMode_Changed"
+          Unchecked="EnhancedMode_Changed"/>
+
+            <!-- Enhanced Legend -->
+            <Separator/>
+            <Label Content="Enhanced Legend:" FontWeight="Bold" Foreground="DarkBlue"/>
+
+            <!-- Completed Cuts - Permanent Blue -->
+            <Rectangle Width="20" Height="4" Fill="#4A90E2" Margin="3,0" 
+           ToolTip="Completed cutting paths - remain visible permanently"/>
+            <Label Content="Completed" FontSize="10" Foreground="#4A90E2" FontWeight="Bold"/>
+
+            <!-- Current Cutting - Red with Glow -->
+            <Rectangle Width="20" Height="4" Fill="Red" Margin="3,0" 
+           ToolTip="Currently cutting - shows active laser path">
+                <Rectangle.Effect>
+                    <DropShadowEffect Color="Red" BlurRadius="3" ShadowDepth="0" Opacity="0.8"/>
+                </Rectangle.Effect>
+            </Rectangle>
+            <Label Content="Cutting" FontSize="10" Foreground="Red" FontWeight="Bold"/>
+
+            <!-- Keep existing Rapid and legend items -->
 
             <!-- Legend -->
             <Separator/>
@@ -201,6 +243,10 @@
             <StatusBarItem HorizontalAlignment="Right">
                 <TextBlock Name="txtMemory" Text="Memory: 0 MB" 
                            FontSize="10" Foreground="Gray"/>
+            </StatusBarItem>
+            <Separator/>
+            <StatusBarItem>
+                <TextBlock Name="txtCutStats" Text="Cuts: 0 | Length: 0mm"/>
             </StatusBarItem>
         </StatusBar>
     </Grid>
