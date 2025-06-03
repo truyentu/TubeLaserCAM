@@ -25,7 +25,16 @@ namespace TubeLaserCAM.UI.Views
                 LeadOutLength = currentSettings.LeadOutLength,
                 UseDustCollection = currentSettings.UseDustCollection,
                 OptimizeSequence = currentSettings.OptimizeSequence,
-                ProgramName = currentSettings.ProgramName
+                ProgramName = currentSettings.ProgramName,
+                CuttingStrategy = new CuttingDirectionSettings
+                {
+                    YDirection = currentSettings.CuttingStrategy.YDirection,
+                    CompleteProfileBeforeMoving = currentSettings.CuttingStrategy.CompleteProfileBeforeMoving,
+                    OptimizeStartPoint = currentSettings.CuttingStrategy.OptimizeStartPoint,
+                    UseLeadInOut = currentSettings.CuttingStrategy.UseLeadInOut,
+                    LeadInLength = currentSettings.CuttingStrategy.LeadInLength,
+                    LeadOutLength = currentSettings.CuttingStrategy.LeadOutLength
+                }
             };
 
             DataContext = Settings;

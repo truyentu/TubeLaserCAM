@@ -1291,7 +1291,7 @@ namespace TubeLaserCAM.UI.Models
                 case CuttingDirectionSettings.YDirectionPreference.AlwaysNegative:
                     return CuttingDirection.YNegative;
 
-                case CuttingDirectionSettings.YDirectionPreference.Alternating:
+
                     // Alternate based on cutting order
                     return (profile.CuttingOrder % 2 == 0) ?
                         CuttingDirection.YPositive :
@@ -1313,13 +1313,13 @@ namespace TubeLaserCAM.UI.Models
     {
         public enum YDirectionPreference
         {
-            Auto,           // Tự động chọn dựa trên tối ưu
+
             AlwaysPositive, // Luôn cắt từ -Y đến +Y
             AlwaysNegative, // Luôn cắt từ +Y đến -Y
-            Alternating     // Xen kẽ để giảm di chuyển
+
         }
 
-        public YDirectionPreference YDirection { get; set; } = YDirectionPreference.Auto;
+        public YDirectionPreference YDirection { get; set; } = YDirectionPreference.AlwaysPositive;
         public bool CompleteProfileBeforeMoving { get; set; } = true;
         public bool OptimizeStartPoint { get; set; } = true;
         public double ProfileConnectionTolerance { get; set; } = 0.1; // mm

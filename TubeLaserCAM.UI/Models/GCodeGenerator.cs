@@ -112,10 +112,6 @@ namespace TubeLaserCAM.UI.Models
         public string GenerateGCodeWithCompleteProfiles(List<UnrolledToolpath> toolpaths, CylinderData cylinderInfo)
         {
             System.Diagnostics.Debug.WriteLine("=== 🎯 COMPLETE PROFILE GROUPING + UNROLL CONSISTENCY 🎯 ===");
-            System.Diagnostics.Debug.WriteLine("✅ Group connected edges into complete profiles");
-            System.Diagnostics.Debug.WriteLine("✅ Single pierce per complete profile");
-            System.Diagnostics.Debug.WriteLine("✅ C-axis unroll consistency [0°, 360°]");
-            System.Diagnostics.Debug.WriteLine("✅ Natural start points for profiles");
             
             try
             {
@@ -236,8 +232,6 @@ namespace TubeLaserCAM.UI.Models
                 profiles.Add(profile);
 
                 System.Diagnostics.Debug.WriteLine($"📋 Profile #{profile.ProfileId}: {profile.ProfileType}, {edgeChain.Count} edges, Closed={profile.IsClosed}");
-                System.Diagnostics.Debug.WriteLine($"   Bounds: Y[{profile.MinY:F1}, {profile.MaxY:F1}], C[{profile.MinC:F1}, {profile.MaxC:F1}]");
-                System.Diagnostics.Debug.WriteLine($"   Edges: {string.Join(", ", edgeChain.Select(e => $"#{e.EdgeId}({e.EdgeInfo?.Type})"))}");
             }
 
             return profiles;
@@ -262,7 +256,6 @@ namespace TubeLaserCAM.UI.Models
                 // Check if candidate starts where current ends
                 if (ArePointsConnected(currentEndPoint, candidateStartPoint, tolerance))
                 {
-                    System.Diagnostics.Debug.WriteLine($"🔗 Connected Edge#{candidate.EdgeId} to Edge#{currentEdge.EdgeId} (normal)");
                     return candidate;
                 }
 
@@ -271,7 +264,6 @@ namespace TubeLaserCAM.UI.Models
                 {
                     // Reverse the candidate edge
                     candidate.Points.Reverse();
-                    System.Diagnostics.Debug.WriteLine($"🔄 Reversed and connected Edge#{candidate.EdgeId} to Edge#{currentEdge.EdgeId}");
                     return candidate;
                 }
             }
@@ -306,7 +298,6 @@ namespace TubeLaserCAM.UI.Models
             var lastPoint = edges.Last().Points.Last();
 
             bool isClosed = ArePointsConnected(firstPoint, lastPoint, 2.0);
-            System.Diagnostics.Debug.WriteLine($"🔍 Profile closure check: {(isClosed ? "CLOSED" : "OPEN")} (dist: Y={Math.Abs(firstPoint.Y - lastPoint.Y):F2}, C={Math.Abs(firstPoint.C - lastPoint.C):F2})");
             
             return isClosed;
         }
@@ -344,9 +335,16 @@ namespace TubeLaserCAM.UI.Models
             AddInitialization();
 
             System.Diagnostics.Debug.WriteLine($"🚀 Processing {profiles.Count} complete profiles...");
+            System.Diagnostics.Debug.WriteLine($"Y Direction Preference: {settings.CuttingStrategy.YDirection}");
+            
+            // Apply Y Direction sorting based on user preference
+            var sortedProfiles = SortProfilesByYDirection(profiles);
 
-            foreach (var profile in profiles)
+            foreach (var profile in sortedProfiles)
             {
+                // Apply Y Direction to individual profile cutting
+                ApplyYDirectionToProfile(profile);
+                
                 ProcessCompleteProfileWithUnrollConsistency(profile);
             }
 
@@ -358,102 +356,66 @@ namespace TubeLaserCAM.UI.Models
         }
 
         /// <summary>
-        /// CORRECTED: Choose optimal start point for profile - UNROLL CONSISTENCY
+        /// Sort profiles by Y Direction preference
         /// </summary>
-        private UnrolledPoint ChooseOptimalStartPointForProfile(CompleteProfile profile)
+        private List<CompleteProfile> SortProfilesByYDirection(List<CompleteProfile> profiles)
         {
-            var allPoints = profile.Edges.SelectMany(e => e.Points).ToList();
-            if (allPoints.Count == 0) return null;
-
-            var firstPoint = allPoints.First();
-            var lastPoint = allPoints.Last();
-
-            System.Diagnostics.Debug.WriteLine($"🎯 Analyzing profile start point strategy...");
-            System.Diagnostics.Debug.WriteLine($"   Profile type: {profile.ProfileType}, Closed: {profile.IsClosed}");
-            System.Diagnostics.Debug.WriteLine($"   First point: Y={firstPoint.Y:F1}, C={firstPoint.C:F1}");
-            System.Diagnostics.Debug.WriteLine($"   Last point: Y={lastPoint.Y:F1}, C={lastPoint.C:F1}");
-
-            // OPEN profile: PHẢI start từ điểm đầu tự nhiên
-            if (!profile.IsClosed)
-            {
-                System.Diagnostics.Debug.WriteLine($"📍 Open profile: MUST use natural start point");
-                return firstPoint;
-            }
-
-            // CLOSED profile: chọn endpoint gần 0° hoặc 360° nhất để optimize C-axis
-            System.Diagnostics.Debug.WriteLine($"🔄 Closed profile: Selecting endpoint closest to 0°/360°");
+            System.Diagnostics.Debug.WriteLine($"🎯 Sorting profiles by Y Direction: {settings.CuttingStrategy.YDirection}");
             
-            // Calculate distances to 0°/360°
-            double firstDistanceTo0 = Math.Min(firstPoint.C, 360 - firstPoint.C);
-            double lastDistanceTo0 = Math.Min(lastPoint.C, 360 - lastPoint.C);
-
-            System.Diagnostics.Debug.WriteLine($"   First point distance to 0°/360°: {firstDistanceTo0:F1}°");
-            System.Diagnostics.Debug.WriteLine($"   Last point distance to 0°/360°: {lastDistanceTo0:F1}°");
-
-            if (firstDistanceTo0 <= lastDistanceTo0)
+            var sortedProfiles = new List<CompleteProfile>(profiles);
+            
+            switch (settings.CuttingStrategy.YDirection)
             {
-                System.Diagnostics.Debug.WriteLine($"✅ SELECTED: First point (closer to boundary)");
-                return firstPoint;
+                case CuttingDirectionSettings.YDirectionPreference.AlwaysPositive:
+                    sortedProfiles.Sort((p1, p2) => p1.MinY.CompareTo(p2.MinY));
+                    System.Diagnostics.Debug.WriteLine("✅ Sorted: Always Positive (Y small to large)");
+                    break;
+                    
+                case CuttingDirectionSettings.YDirectionPreference.AlwaysNegative:
+                    sortedProfiles.Sort((p1, p2) => p2.MinY.CompareTo(p1.MinY));
+                    System.Diagnostics.Debug.WriteLine("✅ Sorted: Always Negative (Y large to small)");
+                    break;
             }
-            else
+            
+            for (int i = 0; i < sortedProfiles.Count; i++)
             {
-                System.Diagnostics.Debug.WriteLine($"✅ SELECTED: Last point (closer to boundary) - Reordering profile");
-                // Reorder profile để start từ last point
-                ReorderProfileToStartFromEnd(profile);
-                return profile.Edges[0].Points[0]; // New first point after reorder
+                var profile = sortedProfiles[i];
+                System.Diagnostics.Debug.WriteLine($"   [{i+1}] Profile #{profile.ProfileId}: Y[{profile.MinY:F1}, {profile.MaxY:F1}]");
+            }
+            
+            return sortedProfiles;
+        }
+        
+        /// <summary>
+        /// Apply Y Direction to individual profile cutting
+        /// </summary>
+        private void ApplyYDirectionToProfile(CompleteProfile profile)
+        {
+            switch (settings.CuttingStrategy.YDirection)
+            {
+                case CuttingDirectionSettings.YDirectionPreference.AlwaysNegative:
+                    ReverseProfileDirection(profile);
+                    System.Diagnostics.Debug.WriteLine($"🔄 Profile #{profile.ProfileId}: Reversed for AlwaysNegative");
+                    break;
+                    
+                case CuttingDirectionSettings.YDirectionPreference.AlwaysPositive:
+                default:
+                    System.Diagnostics.Debug.WriteLine($"➡️ Profile #{profile.ProfileId}: Natural direction for AlwaysPositive");
+                    break;
             }
         }
-
+        
         /// <summary>
-        /// Reorder profile to start from end (for closed profiles)
+        /// Reverse profile cutting direction
         /// </summary>
-        private void ReorderProfileToStartFromEnd(CompleteProfile profile)
+        private void ReverseProfileDirection(CompleteProfile profile)
         {
-            var reversedEdges = profile.Edges.AsEnumerable().Reverse().ToList();
+            profile.Edges.Reverse();
             
-            // Reverse each edge's points as well
-            foreach (var edge in reversedEdges)
+            foreach (var edge in profile.Edges)
             {
                 edge.Points.Reverse();
             }
-            
-            profile.Edges = reversedEdges;
-            System.Diagnostics.Debug.WriteLine($"🔄 Profile reordered to start from previous end point");
-        }
-
-        /// <summary>
-        /// Normalize C value to unroll range [0, 360°] - CONSISTENT với unroll logic
-        /// </summary>
-        private double NormalizeToUnrollRange(double cValue)
-        {
-            while (cValue < 0) cValue += 360;
-            while (cValue >= 360) cValue -= 360;
-            return cValue;
-        }
-
-        /// <summary>
-        /// Enhanced C-axis handling for unroll consistency
-        /// </summary>
-        private double HandleCAxisForUnrollConsistency(double currentC, double targetC)
-        {
-            // Always normalize to [0, 360) để match unroll logic
-            double normalizedCurrent = NormalizeToUnrollRange(currentC);
-            double normalizedTarget = NormalizeToUnrollRange(targetC);
-            
-            // Calculate shortest path movement
-            double directMove = normalizedTarget - normalizedCurrent;
-            double wrapMove = directMove > 0 ? directMove - 360 : directMove + 360;
-            
-            // Choose shortest path but keep result in [0, 360)
-            double chosenMove = Math.Abs(directMove) <= Math.Abs(wrapMove) ? directMove : wrapMove;
-            double resultC = normalizedCurrent + chosenMove;
-            
-            // Final normalization to [0, 360) - ALWAYS trong unroll range
-            resultC = NormalizeToUnrollRange(resultC);
-            
-            System.Diagnostics.Debug.WriteLine($"🎯 C-axis unroll: {currentC:F1}° → {targetC:F1}° = {resultC:F1}° (move: {chosenMove:F1}°, normalized)");
-            
-            return resultC;
         }
 
         /// <summary>
@@ -464,21 +426,18 @@ namespace TubeLaserCAM.UI.Models
             if (profile.Edges.Count == 0)
                 return;
 
-            // STEP 1: Choose optimal start point based on unroll logic
             var optimalStartPoint = ChooseOptimalStartPointForProfile(profile);
             
             gcode.AppendLine($"; 🎯 COMPLETE PROFILE #{profile.ProfileId} - {profile.ProfileType} [UNROLL CONSISTENT]");
-            gcode.AppendLine($"; Edges: {string.Join(", ", profile.Edges.Select(e => $"#{e.EdgeId}({e.EdgeInfo?.Type})"))}");
             gcode.AppendLine($"; Bounds: Y[{profile.MinY:F1}, {profile.MaxY:F1}], C[{profile.MinC:F1}, {profile.MaxC:F1}]");
             gcode.AppendLine($"; Closed: {profile.IsClosed}");
-            gcode.AppendLine($"; Start strategy: {(profile.IsClosed ? "Optimal boundary selection" : "Natural start point")}");
 
-            // Move to chosen start point với normalized C trong [0, 360°]
+            // Move to chosen start point
             double normalizedC = NormalizeToUnrollRange(optimalStartPoint.C);
             currentC = normalizedC;
             currentY = optimalStartPoint.Y;
             
-            gcode.AppendLine($"G0 Y{optimalStartPoint.Y:F3} C{normalizedC:F3} ; Profile start (unroll consistent)");
+            gcode.AppendLine($"G0 Y{optimalStartPoint.Y:F3} C{normalizedC:F3} ; Profile start");
             gcode.AppendLine("G0 Z0");
 
             // SINGLE PIERCE for entire profile
@@ -489,8 +448,6 @@ namespace TubeLaserCAM.UI.Models
             bool isFirstEdge = true;
             foreach (var edge in profile.Edges)
             {
-                System.Diagnostics.Debug.WriteLine($"🔥 Cutting Edge#{edge.EdgeId} ({edge.EdgeInfo?.Type}) with unroll consistency");
-
                 var points = edge.Points;
                 int startIndex = isFirstEdge ? 1 : 1;
 
@@ -513,7 +470,7 @@ namespace TubeLaserCAM.UI.Models
                 }
                 else
                 {
-                    // Lines and bsplines với unroll consistency
+                    // Lines and bsplines
                     for (int i = startIndex; i < points.Count; i++)
                     {
                         var point = points[i];
@@ -531,12 +488,91 @@ namespace TubeLaserCAM.UI.Models
                 isFirstEdge = false;
             }
 
-            // SINGLE M5 for entire profile
             gcode.AppendLine($"M5 ; {profile.ProfileType} profile complete");
             gcode.AppendLine($"G0 Z{settings.SafeZ}");
             gcode.AppendLine();
+        }
 
-            System.Diagnostics.Debug.WriteLine($"✅ Profile #{profile.ProfileId} completed with unroll consistency - C range: [0°, 360°]");
+        /// <summary>
+        /// Choose optimal start point for profile
+        /// </summary>
+        private UnrolledPoint ChooseOptimalStartPointForProfile(CompleteProfile profile)
+        {
+            var allPoints = profile.Edges.SelectMany(e => e.Points).ToList();
+            if (allPoints.Count == 0) return null;
+
+            var firstPoint = allPoints.First();
+            var lastPoint = allPoints.Last();
+
+            // OPEN profile: PHẢI start từ điểm đầu tự nhiên
+            if (!profile.IsClosed)
+            {
+                return firstPoint;
+            }
+
+            // CLOSED profile: chọn endpoint gần 0° hoặc 360° nhất
+            double firstDistanceTo0 = Math.Min(firstPoint.C, 360 - firstPoint.C);
+            double lastDistanceTo0 = Math.Min(lastPoint.C, 360 - lastPoint.C);
+
+            if (firstDistanceTo0 <= lastDistanceTo0)
+            {
+                return firstPoint;
+            }
+            else
+            {
+                // Reorder profile để start từ last point
+                ReorderProfileToStartFromEnd(profile);
+                return profile.Edges[0].Points[0]; // New first point after reorder
+            }
+        }
+
+        /// <summary>
+        /// Reorder profile to start from end (for closed profiles)
+        /// </summary>
+        private void ReorderProfileToStartFromEnd(CompleteProfile profile)
+        {
+            var reversedEdges = profile.Edges.AsEnumerable().Reverse().ToList();
+            
+            // Reverse each edge's points as well
+            foreach (var edge in reversedEdges)
+            {
+                edge.Points.Reverse();
+            }
+            
+            profile.Edges = reversedEdges;
+        }
+
+        /// <summary>
+        /// Normalize C value to unroll range [0, 360°]
+        /// </summary>
+        private double NormalizeToUnrollRange(double cValue)
+        {
+            while (cValue < 0) cValue += 360;
+            while (cValue >= 360) cValue -= 360;
+            return cValue;
+        }
+
+        /// <summary>
+        /// Enhanced C-axis handling for unroll consistency
+        /// </summary>
+        private double HandleCAxisForUnrollConsistency(double currentC, double targetC)
+        {
+            // Always normalize to [0, 360)
+            double normalizedCurrent = NormalizeToUnrollRange(currentC);
+            double normalizedTarget = NormalizeToUnrollRange(targetC);
+            
+            // Calculate shortest path movement
+            double directMove = normalizedTarget - normalizedCurrent;
+            double wrapMove = directMove > 0 ? directMove - 360 : directMove + 360;
+            
+            // Choose shortest path but keep result in [0, 360)
+            double chosenMove = Math.Abs(directMove) <= Math.Abs(wrapMove) ? directMove : wrapMove;
+            double resultC = normalizedCurrent + chosenMove;
+            
+            // Final normalization to [0, 360)
+            resultC = NormalizeToUnrollRange(resultC);
+            
+            return resultC;
         }
 
         private bool IsCompleteCircle(UnrolledToolpath toolpath)
@@ -653,7 +689,6 @@ namespace TubeLaserCAM.UI.Models
             gcode.AppendLine($"M3 S{settings.LaserPower}");
             gcode.AppendLine($"G4 P{settings.PierceTime}");
             
-            // Stop before completing circle
             int endIndex = Math.Max(1, points.Count - 2);
             
             for (int i = 1; i < endIndex; i++)
@@ -667,7 +702,6 @@ namespace TubeLaserCAM.UI.Models
             gcode.AppendLine();
         }
 
-        // Header and footer methods
         protected virtual void AddHeader(CylinderData cylinderInfo)
         {
             gcode.AppendLine($"; {settings.FileHeader}");
@@ -696,9 +730,6 @@ namespace TubeLaserCAM.UI.Models
             gcode.AppendLine("M30 ; Program end");
         }
 
-        /// <summary>
-        /// Complete profile structure
-        /// </summary>
         public class CompleteProfile
         {
             public int ProfileId { get; set; }

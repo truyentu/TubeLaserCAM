@@ -1601,7 +1601,7 @@ namespace TubeLaserCAM.UI.Models
             {
                 ProfileConnectionTolerance = 0.5,  // 0.5mm gap tolerance
                 CompleteProfileBeforeMoving = true,
-                YDirection = CuttingDirectionSettings.YDirectionPreference.Auto,
+                YDirection = CuttingDirectionSettings.YDirectionPreference.AlwaysPositive,
                 OptimizeStartPoint = true,
                 UseLeadInOut = true,
                 LeadInLength = 2.0,

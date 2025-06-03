@@ -124,10 +124,10 @@
                   SelectedValue="{Binding CuttingStrategy.YDirection}"
                   SelectedValuePath="Tag"
                   Margin="0,5,0,10">
-                            <ComboBoxItem Content="Auto (Optimize)" Tag="Auto" IsSelected="True"/>
-                            <ComboBoxItem Content="Always Positive (Y- to Y+)" Tag="AlwaysPositive"/>
+
+                            <ComboBoxItem Content="Always Positive (Y- to Y+)" Tag="AlwaysPositive" IsSelected="True"/>
                             <ComboBoxItem Content="Always Negative (Y+ to Y-)" Tag="AlwaysNegative"/>
-                            <ComboBoxItem Content="Alternating" Tag="Alternating"/>
+
                         </ComboBox>
 
                         <CheckBox Content="Complete profile before moving to next" 
