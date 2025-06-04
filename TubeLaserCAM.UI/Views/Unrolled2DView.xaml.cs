@@ -34,6 +34,22 @@ namespace TubeLaserCAM.UI.Views
         private bool isInitialized = false;
         private EnhancedAnimationController enhancedAnimationController;
         private bool useEnhancedAnimation = true; // Flag để bật/tắt enhanced mode
+        private double yOffsetTransform = 0;
+        private bool hasGCodeTransformation = false;
+
+
+        // Public properties để EnhancedAnimationController có thể access
+        public double YOffsetTransform
+        {
+            get { return yOffsetTransform; }
+        }
+
+        public bool HasGCodeTransformation
+        {
+            get { return hasGCodeTransformation; }
+        }
+        // THÊM: Public properties để EnhancedAnimationController có thể access
+
 
 
         public Unrolled2DView(List<UnrolledToolpath> unrolledToolpaths, CylinderData cylinderInfo)
@@ -89,6 +105,7 @@ namespace TubeLaserCAM.UI.Views
                     cylinderLength,
                     scale
                  );
+                enhancedAnimationController.ParentView = this;
 
                 System.Diagnostics.Debug.WriteLine($"Scale calculated: {scale}, Circumference: {circumference}");
 
@@ -158,6 +175,62 @@ namespace TubeLaserCAM.UI.Views
             UpdateStatus($"Displayed {toolpaths.Count} toolpaths");
         }
 
+        private void CalculateGCodeTransformation()
+        {
+            if (parsedGCode == null || parsedGCode.Moves.Count == 0 ||
+                toolpaths == null || toolpaths.Count == 0)
+            {
+                hasGCodeTransformation = false;
+                yOffsetTransform = 0;
+                System.Diagnostics.Debug.WriteLine("❌ Cannot calculate transformation - missing data");
+                return;
+            }
+
+            System.Diagnostics.Debug.WriteLine("\n🔧 === CALCULATING G-CODE TRANSFORMATION ===");
+
+            // Tìm Y bounds từ G-code (bỏ qua pierce points)
+            var validMoves = parsedGCode.Moves.Where(m => m.Type != GCodeParser.GCodeMove.MoveType.Pierce).ToList();
+            if (!validMoves.Any())
+            {
+                hasGCodeTransformation = false;
+                return;
+            }
+
+            double gCodeYMin = validMoves.Min(m => m.Y);
+            double gCodeYMax = validMoves.Max(m => m.Y);
+
+            // Tìm Y bounds từ Toolpaths
+            double toolpathYMin = toolpaths.Min(tp => tp.MinY);
+            double toolpathYMax = toolpaths.Max(tp => tp.MaxY);
+
+            System.Diagnostics.Debug.WriteLine($"G-Code Y range: [{gCodeYMin:F3}, {gCodeYMax:F3}]");
+            System.Diagnostics.Debug.WriteLine($"Toolpath Y range: [{toolpathYMin:F3}, {toolpathYMax:F3}]");
+
+            // Tính offset dựa trên Y max (top của cylinder)
+            // Logic: Top của cylinder trong cả 2 hệ phải khớp nhau
+            yOffsetTransform = toolpathYMax - gCodeYMax;
+
+            System.Diagnostics.Debug.WriteLine($"\nTransform calculation:");
+            System.Diagnostics.Debug.WriteLine($"  Toolpath Y max (top): {toolpathYMax:F3}");
+            System.Diagnostics.Debug.WriteLine($"  G-Code Y max (top): {gCodeYMax:F3}");
+            System.Diagnostics.Debug.WriteLine($"  Required offset: {yOffsetTransform:F3}");
+
+            hasGCodeTransformation = true;
+
+            // Verify
+            System.Diagnostics.Debug.WriteLine($"\nVerification:");
+            System.Diagnostics.Debug.WriteLine($"  G-Code Y={gCodeYMax:F3} + offset → {gCodeYMax + yOffsetTransform:F3} (should ≈ {toolpathYMax:F3})");
+            System.Diagnostics.Debug.WriteLine($"  G-Code Y={gCodeYMin:F3} + offset → {gCodeYMin + yOffsetTransform:F3} (should ≈ {toolpathYMin:F3})");
+
+            System.Diagnostics.Debug.WriteLine("🔧 === END TRANSFORMATION ===\n");
+        }
+
+        // Helper method để transform Y coordinate
+        private double TransformGCodeY(double gCodeY)
+        {
+            return hasGCodeTransformation ? gCodeY + yOffsetTransform : gCodeY;
+        }
+
         private void DrawToolpath(UnrolledToolpath toolpath, CylinderData cylinderInfo)
         {
             try
@@ -175,10 +248,18 @@ namespace TubeLaserCAM.UI.Views
                     return;
                 }
 
+                // ========== THÊM DEBUG CHI TIẾT ==========
+                System.Diagnostics.Debug.WriteLine($"\n🖌️ === DRAWTOOLPATH DEBUG START - EdgeId: {toolpath.EdgeId} ===");
+                System.Diagnostics.Debug.WriteLine($"📊 Toolpath Info:");
+                System.Diagnostics.Debug.WriteLine($"   - EdgeId: {toolpath.EdgeId}");
+                System.Diagnostics.Debug.WriteLine($"   - Type: {toolpath.EdgeInfo?.Type ?? "Unknown"}");
+                System.Diagnostics.Debug.WriteLine($"   - Points count: {toolpath.Points.Count}");
+                System.Diagnostics.Debug.WriteLine($"   - Y range: [{toolpath.MinY:F3}, {toolpath.MaxY:F3}]");
+                System.Diagnostics.Debug.WriteLine($"   - Total rotation: {toolpath.TotalRotation:F1}°");
+
                 if (toolpath.Points.Count < 2)
                 {
                     System.Diagnostics.Debug.WriteLine($"Warning: Toolpath {toolpath.EdgeId} has only {toolpath.Points.Count} point(s)");
-                    // Vẫn vẽ single point nếu có
                     if (toolpath.Points.Count == 1)
                     {
                         DrawSinglePoint(toolpath.Points[0], toolpath);
@@ -186,9 +267,7 @@ namespace TubeLaserCAM.UI.Views
                     return;
                 }
 
-                System.Diagnostics.Debug.WriteLine($"Drawing toolpath {toolpath.EdgeId} with {toolpath.Points.Count} points");
-
-                // Create polyline với error handling cho mỗi point
+                // Create polyline
                 var polyline = new Polyline
                 {
                     StrokeLineJoin = PenLineJoin.Round,
@@ -196,16 +275,15 @@ namespace TubeLaserCAM.UI.Views
                     StrokeEndLineCap = PenLineCap.Round
                 };
 
-                // Set color với fallback
+                // Set color
                 try
                 {
                     polyline.Stroke = GetColorForEdgeType(toolpath.EdgeInfo?.Type ?? "Unknown");
                 }
                 catch
                 {
-                    polyline.Stroke = Brushes.Black; // Default color
+                    polyline.Stroke = Brushes.Black;
                 }
-
                 polyline.StrokeThickness = 2;
 
                 // Validate cylinder info
@@ -215,19 +293,47 @@ namespace TubeLaserCAM.UI.Views
                                     (cylinderInfo?.Length ?? cylinderLength) : 200;
                 double centerY = validLength / 2;
 
-                // Process points với validation
+                // ========== DEBUG CYLINDER & COORDINATE SYSTEM ==========
+                System.Diagnostics.Debug.WriteLine($"\n📐 Cylinder & Coordinate Info:");
+                System.Diagnostics.Debug.WriteLine($"   - cylinderRadius (class): {cylinderRadius:F1}mm");
+                System.Diagnostics.Debug.WriteLine($"   - cylinderLength (class): {cylinderLength:F1}mm");
+                System.Diagnostics.Debug.WriteLine($"   - validRadius (used): {validRadius:F1}mm");
+                System.Diagnostics.Debug.WriteLine($"   - validLength (used): {validLength:F1}mm");
+                System.Diagnostics.Debug.WriteLine($"   - centerY: {centerY:F1}mm");
+                System.Diagnostics.Debug.WriteLine($"   - scale: {scale:F3}");
+
+                // ========== DEBUG FIRST AND LAST POINTS ==========
+                if (toolpath.Points.Count > 0)
+                {
+                    var firstPt = toolpath.Points[0];
+                    var lastPt = toolpath.Points[toolpath.Points.Count - 1];
+
+                    System.Diagnostics.Debug.WriteLine($"\n🔹 First Point:");
+                    System.Diagnostics.Debug.WriteLine($"   - Y: {firstPt.Y:F3}mm, C: {firstPt.C:F3}°");
+
+                    System.Diagnostics.Debug.WriteLine($"\n🔸 Last Point:");
+                    System.Diagnostics.Debug.WriteLine($"   - Y: {lastPt.Y:F3}mm, C: {lastPt.C:F3}°");
+                }
+
+                // Process points
                 int skippedPoints = 0;
                 Point? lastValidPoint = null;
+                int validPointCount = 0;
 
-                foreach (var point in toolpath.Points)
+                // ========== DEBUG TRANSFORMATION FOR KEY POINTS ==========
+                System.Diagnostics.Debug.WriteLine($"\n🔄 Point Transformation Debug:");
+
+                for (int i = 0; i < toolpath.Points.Count; i++)
                 {
+                    var point = toolpath.Points[i];
+
                     try
                     {
                         // Validate point values
                         if (double.IsNaN(point.Y) || double.IsNaN(point.C) ||
                             double.IsInfinity(point.Y) || double.IsInfinity(point.C))
                         {
-                            System.Diagnostics.Debug.WriteLine($"Invalid point values: Y={point.Y}, C={point.C}");
+                            System.Diagnostics.Debug.WriteLine($"   Point[{i}] INVALID: Y={point.Y}, C={point.C}");
                             skippedPoints++;
                             continue;
                         }
@@ -237,15 +343,26 @@ namespace TubeLaserCAM.UI.Views
                         while (normalizedC < 0) normalizedC += 360;
                         while (normalizedC > 360) normalizedC -= 360;
 
-                        // Convert to canvas coordinates với bounds checking
+                        // Convert to canvas coordinates
                         double x = 50 + (normalizedC / 360.0) * 2 * Math.PI * validRadius * scale;
                         double y = 50 + (centerY + point.Y) * scale;
+
+                        // ========== DEBUG KEY POINTS TRANSFORMATION ==========
+                        if (i == 0 || i == toolpath.Points.Count - 1 || i % 50 == 0)
+                        {
+                            System.Diagnostics.Debug.WriteLine($"\n   Point[{i}] Transformation:");
+                            System.Diagnostics.Debug.WriteLine($"      Input: Y={point.Y:F3}, C={point.C:F3}");
+                            System.Diagnostics.Debug.WriteLine($"      NormalizedC: {normalizedC:F3}°");
+                            System.Diagnostics.Debug.WriteLine($"      X formula: 50 + ({normalizedC:F3}/360) * 2π * {validRadius:F1} * {scale:F3}");
+                            System.Diagnostics.Debug.WriteLine($"      Y formula: 50 + ({centerY:F1} + {point.Y:F3}) * {scale:F3}");
+                            System.Diagnostics.Debug.WriteLine($"      Canvas result: X={x:F1}, Y={y:F1}");
+                        }
 
                         // Validate canvas coordinates
                         if (double.IsNaN(x) || double.IsNaN(y) ||
                             double.IsInfinity(x) || double.IsInfinity(y))
                         {
-                            System.Diagnostics.Debug.WriteLine($"Invalid canvas coordinates: x={x}, y={y}");
+                            System.Diagnostics.Debug.WriteLine($"   Point[{i}] Canvas coords INVALID: x={x}, y={y}");
                             skippedPoints++;
                             continue;
                         }
@@ -253,7 +370,7 @@ namespace TubeLaserCAM.UI.Views
                         // Check for reasonable bounds
                         if (x < -10000 || x > 10000 || y < -10000 || y > 10000)
                         {
-                            System.Diagnostics.Debug.WriteLine($"Coordinates out of bounds: x={x}, y={y}");
+                            System.Diagnostics.Debug.WriteLine($"   Point[{i}] OUT OF BOUNDS: x={x}, y={y}");
                             skippedPoints++;
                             continue;
                         }
@@ -265,30 +382,45 @@ namespace TubeLaserCAM.UI.Views
                             Math.Abs(lastValidPoint.Value.X - canvasPoint.X) < 0.01 &&
                             Math.Abs(lastValidPoint.Value.Y - canvasPoint.Y) < 0.01)
                         {
-                            continue; // Skip duplicate
+                            continue;
                         }
 
                         polyline.Points.Add(canvasPoint);
                         lastValidPoint = canvasPoint;
+                        validPointCount++;
                     }
                     catch (Exception ptEx)
                     {
-                        System.Diagnostics.Debug.WriteLine($"Error processing point: {ptEx.Message}");
+                        System.Diagnostics.Debug.WriteLine($"   Point[{i}] ERROR: {ptEx.Message}");
                         skippedPoints++;
                     }
                 }
 
-                if (skippedPoints > 0)
-                {
-                    System.Diagnostics.Debug.WriteLine($"Skipped {skippedPoints} invalid points");
-                }
+                // ========== DEBUG SUMMARY ==========
+                System.Diagnostics.Debug.WriteLine($"\n📈 Processing Summary:");
+                System.Diagnostics.Debug.WriteLine($"   - Total points: {toolpath.Points.Count}");
+                System.Diagnostics.Debug.WriteLine($"   - Valid points: {validPointCount}");
+                System.Diagnostics.Debug.WriteLine($"   - Skipped points: {skippedPoints}");
+                System.Diagnostics.Debug.WriteLine($"   - Polyline points: {polyline.Points.Count}");
 
                 // Only add polyline if it has valid points
                 if (polyline.Points.Count > 0)
                 {
+                    // ========== DEBUG CANVAS BOUNDS ==========
+                    double minX = polyline.Points.Min(p => p.X);
+                    double maxX = polyline.Points.Max(p => p.X);
+                    double minY = polyline.Points.Min(p => p.Y);
+                    double maxY = polyline.Points.Max(p => p.Y);
+
+                    System.Diagnostics.Debug.WriteLine($"\n📍 Canvas Bounds:");
+                    System.Diagnostics.Debug.WriteLine($"   - X range: [{minX:F1}, {maxX:F1}]");
+                    System.Diagnostics.Debug.WriteLine($"   - Y range: [{minY:F1}, {maxY:F1}]");
+                    System.Diagnostics.Debug.WriteLine($"   - Width: {maxX - minX:F1}");
+                    System.Diagnostics.Debug.WriteLine($"   - Height: {maxY - minY:F1}");
+
                     drawingCanvas.Children.Add(polyline);
 
-                    // Add tooltip với safe string formatting
+                    // Add tooltip
                     try
                     {
                         var tooltip = new ToolTip
@@ -306,21 +438,21 @@ namespace TubeLaserCAM.UI.Views
                     {
                         System.Diagnostics.Debug.WriteLine($"Error creating tooltip: {ttEx.Message}");
                     }
+
+                    System.Diagnostics.Debug.WriteLine($"\n✅ Toolpath {toolpath.EdgeId} drawn successfully");
                 }
                 else
                 {
-                    System.Diagnostics.Debug.WriteLine($"No valid points to draw for toolpath {toolpath.EdgeId}");
+                    System.Diagnostics.Debug.WriteLine($"\n❌ No valid points to draw for toolpath {toolpath.EdgeId}");
                 }
+
+                System.Diagnostics.Debug.WriteLine($"🖌️ === DRAWTOOLPATH DEBUG END - EdgeId: {toolpath.EdgeId} ===\n");
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"Error drawing toolpath {toolpath?.EdgeId}: {ex}");
-
-                // Log stack trace for debugging
-                System.Diagnostics.Debug.WriteLine($"Stack trace: {ex.StackTrace}");
-
-                // Don't show message box for each error - too intrusive
-                // Just log it
+                System.Diagnostics.Debug.WriteLine($"\n❌ CRITICAL ERROR in DrawToolpath {toolpath?.EdgeId}:");
+                System.Diagnostics.Debug.WriteLine($"   Message: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"   Stack: {ex.StackTrace}");
             }
         }
 
@@ -632,12 +764,69 @@ namespace TubeLaserCAM.UI.Views
             var parser = new GCodeParser();
             parsedGCode = parser.ParseGCode(gcode);
 
-            // Update status
+            // Calculate coordinate transformation
+            CalculateGCodeTransformation();
+
             UpdateStatus($"Loaded G-Code: {parsedGCode.Moves.Count} moves, " +
                         $"{parsedGCode.PierceCount} pierces");
 
-            // Draw visualization
             DrawGCodeVisualization();
+        }
+
+        private void AnalyzeGCodeCoordinateSystem()
+        {
+            if (parsedGCode == null || parsedGCode.Moves.Count == 0) return;
+
+            System.Diagnostics.Debug.WriteLine("\n🔍 === G-CODE COORDINATE ANALYSIS ===");
+
+            // Tìm Y bounds
+            double yMin = double.MaxValue;
+            double yMax = double.MinValue;
+
+            foreach (var move in parsedGCode.Moves)
+            {
+                if (move.Y < yMin) yMin = move.Y;
+                if (move.Y > yMax) yMax = move.Y;
+            }
+
+            System.Diagnostics.Debug.WriteLine($"G-Code Y range: [{yMin:F3}, {yMax:F3}]");
+            System.Diagnostics.Debug.WriteLine($"G-Code Y span: {yMax - yMin:F3}mm");
+
+            // Phân tích xem Y=0 ở đâu
+            if (Math.Abs(yMin) < 0.1 && yMax > 0)
+            {
+                System.Diagnostics.Debug.WriteLine("Y=0 appears to be at TOP (yMin ≈ 0, yMax > 0)");
+            }
+            else if (yMin < 0 && yMax > 0)
+            {
+                System.Diagnostics.Debug.WriteLine("Y=0 appears to be at CENTER (yMin < 0, yMax > 0)");
+            }
+            else if (yMax < 0.1 && yMin < 0)
+            {
+                System.Diagnostics.Debug.WriteLine("Y=0 appears to be at BOTTOM (yMax ≈ 0, yMin < 0)");
+            }
+
+            // So sánh với toolpath bounds
+            if (toolpaths != null && toolpaths.Count > 0)
+            {
+                double tpYMin = double.MaxValue;
+                double tpYMax = double.MinValue;
+
+                foreach (var tp in toolpaths)
+                {
+                    if (tp.MinY < tpYMin) tpYMin = tp.MinY;
+                    if (tp.MaxY > tpYMax) tpYMax = tp.MaxY;
+                }
+
+                System.Diagnostics.Debug.WriteLine($"\nToolpath Y range: [{tpYMin:F3}, {tpYMax:F3}]");
+                System.Diagnostics.Debug.WriteLine($"Toolpath Y span: {tpYMax - tpYMin:F3}mm");
+
+                // Kiểm tra offset
+                double yOffset = tpYMin - yMin;
+                System.Diagnostics.Debug.WriteLine($"Potential Y offset: {yOffset:F3}mm");
+            }
+
+            System.Diagnostics.Debug.WriteLine("=== END ANALYSIS ===\n");
         }
 
         private void DrawGCodeVisualization()
@@ -677,27 +866,27 @@ namespace TubeLaserCAM.UI.Views
 
         private void DrawMove(GCodeParser.GCodeMove from, GCodeParser.GCodeMove to, int index)
         {
-            System.Diagnostics.Debug.WriteLine($"DrawMove {index}: " +
-                $"From({from.Y:F3},{from.C:F3}) To({to.Y:F3},{to.C:F3})");
+            double centerY = cylinderLength / 2;
+
+            // Apply transformation
+            double fromY = TransformGCodeY(from.Y);
+            double toY = TransformGCodeY(to.Y);
+
+            if (index <= 3) // Debug first few moves
+            {
+                System.Diagnostics.Debug.WriteLine($"DrawMove #{index}:");
+                System.Diagnostics.Debug.WriteLine($"  Original: Y {from.Y:F3} → {to.Y:F3}");
+                System.Diagnostics.Debug.WriteLine($"  Transformed: Y {fromY:F3} → {toY:F3}");
+            }
+
             var line = new Line
             {
                 X1 = 50 + (from.C / 360.0) * 2 * Math.PI * cylinderRadius * scale,
-                Y1 = 50 + (cylinderLength / 2 + from.Y) * scale,
+                Y1 = 50 + (centerY + fromY) * scale,
                 X2 = 50 + (to.C / 360.0) * 2 * Math.PI * cylinderRadius * scale,
-                Y2 = 50 + (cylinderLength / 2 + to.Y) * scale,
+                Y2 = 50 + (centerY + toY) * scale,
                 Tag = "gcode"
             };
-            System.Diagnostics.Debug.WriteLine($"  Canvas: ({line.X1:F1},{line.Y1:F1}) to " +
-                                     $"({line.X2:F1},{line.Y2:F1})");
-            // Kiểm tra xem có nằm trong canvas bounds không
-            double canvasWidth = 2 * Math.PI * cylinderRadius * scale;
-            double canvasHeight = cylinderLength * scale;
-
-            if (line.X1 < 50 || line.X1 > 50 + canvasWidth ||
-                line.Y1 < 50 || line.Y1 > 50 + canvasHeight)
-            {
-                System.Diagnostics.Debug.WriteLine("  WARNING: Start point outside canvas!");
-            }
 
             // Style based on move type
             switch (to.Type)
@@ -716,7 +905,6 @@ namespace TubeLaserCAM.UI.Views
 
             drawingCanvas.Children.Add(line);
 
-            // Add direction arrow every N moves
             if (index % 5 == 0 && to.Type == GCodeParser.GCodeMove.MoveType.Cut)
             {
                 DrawDirectionArrow(from, to);
@@ -728,6 +916,8 @@ namespace TubeLaserCAM.UI.Views
             var piercePoints = parsedGCode.Moves
                 .Where(m => m.Type == GCodeParser.GCodeMove.MoveType.Pierce)
                 .ToList();
+
+            double centerY = cylinderLength / 2;
 
             foreach (var pierce in piercePoints)
             {
@@ -742,13 +932,12 @@ namespace TubeLaserCAM.UI.Views
                 };
 
                 double x = 50 + (pierce.C / 360.0) * 2 * Math.PI * cylinderRadius * scale;
-                double y = 50 + (cylinderLength / 2 + pierce.Y) * scale;
+                double y = 50 + (centerY + TransformGCodeY(pierce.Y)) * scale;
 
                 Canvas.SetLeft(marker, x - 4);
                 Canvas.SetTop(marker, y - 4);
                 drawingCanvas.Children.Add(marker);
 
-                // Tooltip
                 marker.ToolTip = $"Pierce #{piercePoints.IndexOf(pierce) + 1}\n" +
                                 $"Y: {pierce.Y:F2}, C: {pierce.C:F1}°";
             }
@@ -758,8 +947,16 @@ namespace TubeLaserCAM.UI.Views
         {
             if (parsedGCode == null || parsedGCode.Moves.Count == 0) return;
 
-            // START marker
             var start = parsedGCode.Moves.First();
+            var end = parsedGCode.Moves.Last();
+
+            double centerY = cylinderLength / 2;
+
+            System.Diagnostics.Debug.WriteLine("\n🎯 === START/END MARKERS ===");
+            System.Diagnostics.Debug.WriteLine($"Start: Y={start.Y:F3} → {TransformGCodeY(start.Y):F3}, C={start.C:F3}°");
+            System.Diagnostics.Debug.WriteLine($"End: Y={end.Y:F3} → {TransformGCodeY(end.Y):F3}, C={end.C:F3}°");
+
+            // START marker
             var startMarker = new Ellipse
             {
                 Width = 20,
@@ -771,13 +968,12 @@ namespace TubeLaserCAM.UI.Views
             };
 
             double startX = 50 + (start.C / 360.0) * 2 * Math.PI * cylinderRadius * scale;
-            double startY = 50 + (cylinderLength / 2 + start.Y) * scale;
+            double startY = 50 + (centerY + TransformGCodeY(start.Y)) * scale;
 
             Canvas.SetLeft(startMarker, startX - 10);
             Canvas.SetTop(startMarker, startY - 10);
             drawingCanvas.Children.Add(startMarker);
 
-            // START text
             var startText = new TextBlock
             {
                 Text = "START",
@@ -790,7 +986,6 @@ namespace TubeLaserCAM.UI.Views
             drawingCanvas.Children.Add(startText);
 
             // END marker
-            var end = parsedGCode.Moves.Last();
             var endMarker = new Rectangle
             {
                 Width = 20,
@@ -802,13 +997,12 @@ namespace TubeLaserCAM.UI.Views
             };
 
             double endX = 50 + (end.C / 360.0) * 2 * Math.PI * cylinderRadius * scale;
-            double endY = 50 + (cylinderLength / 2 + end.Y) * scale;
+            double endY = 50 + (centerY + TransformGCodeY(end.Y)) * scale;
 
             Canvas.SetLeft(endMarker, endX - 10);
             Canvas.SetTop(endMarker, endY - 10);
             drawingCanvas.Children.Add(endMarker);
 
-            // END text
             var endText = new TextBlock
             {
                 Text = "END",
@@ -823,19 +1017,17 @@ namespace TubeLaserCAM.UI.Views
 
         private void DrawDirectionArrow(GCodeParser.GCodeMove from, GCodeParser.GCodeMove to)
         {
+            double centerY = cylinderLength / 2;
+
             double x1 = 50 + (from.C / 360.0) * 2 * Math.PI * cylinderRadius * scale;
-            double y1 = 50 + (cylinderLength / 2 + from.Y) * scale;
+            double y1 = 50 + (centerY + TransformGCodeY(from.Y)) * scale;
             double x2 = 50 + (to.C / 360.0) * 2 * Math.PI * cylinderRadius * scale;
-            double y2 = 50 + (cylinderLength / 2 + to.Y) * scale;
+            double y2 = 50 + (centerY + TransformGCodeY(to.Y)) * scale;
 
-            // Calculate angle
             double angle = Math.Atan2(y2 - y1, x2 - x1) * 180 / Math.PI;
-
-            // Position arrow at midpoint
             double midX = (x1 + x2) / 2;
             double midY = (y1 + y2) / 2;
 
-            // Create arrow polygon
             var arrow = new Polygon
             {
                 Points = new PointCollection
@@ -1118,13 +1310,18 @@ namespace TubeLaserCAM.UI.Views
 
         private void AnimateMove(GCodeParser.GCodeMove from, GCodeParser.GCodeMove to)
         {
-            // Draw the animated line
+            double centerY = cylinderLength / 2;
+
+            // Apply transformation
+            double fromY = TransformGCodeY(from.Y);
+            double toY = TransformGCodeY(to.Y);
+
             var animLine = new Line
             {
                 X1 = 50 + (from.C / 360.0) * 2 * Math.PI * cylinderRadius * scale,
-                Y1 = 50 + (cylinderLength / 2 + from.Y) * scale,
+                Y1 = 50 + (centerY + fromY) * scale,
                 X2 = 50 + (to.C / 360.0) * 2 * Math.PI * cylinderRadius * scale,
-                Y2 = 50 + (cylinderLength / 2 + to.Y) * scale,
+                Y2 = 50 + (centerY + toY) * scale,
                 Tag = "animation"
             };
 
@@ -1133,8 +1330,6 @@ namespace TubeLaserCAM.UI.Views
             {
                 animLine.Stroke = Brushes.Red;
                 animLine.StrokeThickness = 4;
-
-                // Add glow effect
                 animLine.Effect = new DropShadowEffect
                 {
                     Color = Colors.Red,
@@ -1151,11 +1346,7 @@ namespace TubeLaserCAM.UI.Views
             }
 
             drawingCanvas.Children.Add(animLine);
-
-            // Update tool position
             UpdateToolIndicator(to);
-
-            // Fade out previous lines
             FadeOldAnimationLines();
         }
 
@@ -1192,10 +1383,11 @@ namespace TubeLaserCAM.UI.Views
             if (oldTool != null)
                 drawingCanvas.Children.Remove(oldTool);
 
-            // Create tool indicator
+            double centerY = cylinderLength / 2;
+            double transformedY = TransformGCodeY(position.Y);
+
             var toolGroup = new Canvas { Tag = "tool" };
 
-            // Outer circle
             var outerCircle = new Ellipse
             {
                 Width = 20,
@@ -1205,7 +1397,6 @@ namespace TubeLaserCAM.UI.Views
                 Fill = position.LaserOn ? Brushes.Red : Brushes.Blue
             };
 
-            // Inner dot
             var innerDot = new Ellipse
             {
                 Width = 6,
@@ -1219,14 +1410,12 @@ namespace TubeLaserCAM.UI.Views
             toolGroup.Children.Add(outerCircle);
             toolGroup.Children.Add(innerDot);
 
-            // Position
             double x = 50 + (position.C / 360.0) * 2 * Math.PI * cylinderRadius * scale;
-            double y = 50 + (cylinderLength / 2 + position.Y) * scale;
+            double y = 50 + (centerY + transformedY) * scale;
 
             Canvas.SetLeft(toolGroup, x - 10);
             Canvas.SetTop(toolGroup, y - 10);
 
-            // Add pulsing animation
             var animation = new DoubleAnimation
             {
                 From = 0.5,
@@ -1238,8 +1427,6 @@ namespace TubeLaserCAM.UI.Views
             outerCircle.BeginAnimation(OpacityProperty, animation);
 
             drawingCanvas.Children.Add(toolGroup);
-
-            // Auto-scroll to keep tool in view
             ScrollToPosition(x, y);
         }
 
@@ -1505,6 +1692,10 @@ namespace TubeLaserCAM.UI.Views
                     MessageBoxButton.OK, MessageBoxImage.Information);
             }
         }
+
+        /// <summary>
+        /// Calculate coordinate transformation để sync animation với G-code machine coordinates
+        /// </summary>
 
         #region Error Handling Helpers
 

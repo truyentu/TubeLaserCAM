@@ -28,6 +28,10 @@ namespace TubeLaserCAM.UI.Models
         
         // FIX: Duplicate prevention flag
         public bool UseDuplicateFix { get; set; } = true;
+        
+        // Material Allowance Settings
+        public double MaterialAllowanceStart { get; set; } = 5.0; // mm - phần phôi dư ở điểm bắt đầu
+        public double MaterialAllowanceEnd { get; set; } = 5.0; // mm - phần phôi dư ở điểm kết thúc
     }
 
     public class GCodeGenerator
@@ -40,7 +44,7 @@ namespace TubeLaserCAM.UI.Models
         // Track current position
         protected double currentY = 0;
         protected double currentC = 0;
-
+        protected double currentZ = 0;
         // Duplicate prevention tracking
         private HashSet<int> processedEdges = new HashSet<int>();
         private HashSet<string> processedMoves = new HashSet<string>();
@@ -338,7 +342,10 @@ namespace TubeLaserCAM.UI.Models
             System.Diagnostics.Debug.WriteLine($"Y Direction Preference: {settings.CuttingStrategy.YDirection}");
             
             // Apply Y Direction sorting based on user preference
-            var sortedProfiles = SortProfilesByYDirection(profiles);
+            // CRITICAL: Transform unroll coordinates to machine coordinates
+            var transformedProfiles = TransformUnrollToMachineCoordinates(profiles);
+            
+            var sortedProfiles = SortProfilesByYDirection(transformedProfiles);
 
             foreach (var profile in sortedProfiles)
             {
@@ -368,12 +375,12 @@ namespace TubeLaserCAM.UI.Models
             {
                 case CuttingDirectionSettings.YDirectionPreference.AlwaysPositive:
                     sortedProfiles.Sort((p1, p2) => p1.MinY.CompareTo(p2.MinY));
-                    System.Diagnostics.Debug.WriteLine("✅ Sorted: Always Positive (Y small to large)");
+                    System.Diagnostics.Debug.WriteLine("✅ Always Positive: Cắt theo thứ tự Y âm -> Y dương (1->2->3->4)");
                     break;
                     
                 case CuttingDirectionSettings.YDirectionPreference.AlwaysNegative:
                     sortedProfiles.Sort((p1, p2) => p2.MinY.CompareTo(p1.MinY));
-                    System.Diagnostics.Debug.WriteLine("✅ Sorted: Always Negative (Y large to small)");
+                    System.Diagnostics.Debug.WriteLine("✅ Always Negative: ĐẢO NGƯỢC TẤT CẢ profiles Y dương -> Y âm (4->3->2->1)");
                     break;
             }
             
@@ -427,21 +434,38 @@ namespace TubeLaserCAM.UI.Models
                 return;
 
             var optimalStartPoint = ChooseOptimalStartPointForProfile(profile);
-            
-            gcode.AppendLine($"; 🎯 COMPLETE PROFILE #{profile.ProfileId} - {profile.ProfileType} [UNROLL CONSISTENT]");
-            gcode.AppendLine($"; Bounds: Y[{profile.MinY:F1}, {profile.MaxY:F1}], C[{profile.MinC:F1}, {profile.MaxC:F1}]");
-            gcode.AppendLine($"; Closed: {profile.IsClosed}");
 
             // Move to chosen start point
             double normalizedC = NormalizeToUnrollRange(optimalStartPoint.C);
-            currentC = normalizedC;
-            currentY = optimalStartPoint.Y;
-            
-            gcode.AppendLine($"G0 Y{optimalStartPoint.Y:F3} C{normalizedC:F3} ; Profile start");
+            // THÊM: Kiểm tra xem có cần di chuyển xa không
+            double yDistance = Math.Abs(currentY - optimalStartPoint.Y);
+            double cDistance = Math.Abs(currentC - normalizedC);
+
+            // Nếu di chuyển xa, nâng Z trước
+            if (yDistance > 10.0 || cDistance > 30.0) // Thresholds có thể điều chỉnh
+            {
+                // Ensure Z is up before long rapid move
+                if (Math.Abs(currentZ) < settings.SafeZ - 0.1)
+                {
+                    gcode.AppendLine($"G0 Z{settings.SafeZ}");
+                    currentZ = settings.SafeZ;
+                }
+            }
+
+            // THÊM: Debug log
+            System.Diagnostics.Debug.WriteLine($"🎯 Moving to profile start: Y={optimalStartPoint.Y:F3}, C={normalizedC:F3}");
+
+            // SỬA: Di chuyển trực tiếp đến vị trí start point thực tế thay vì Y=0
+            gcode.AppendLine($"G0 Y{optimalStartPoint.Y:F3} C{normalizedC:F3}");
             gcode.AppendLine("G0 Z0");
 
+            // Update current position tracking
+            currentC = normalizedC;
+            currentY = optimalStartPoint.Y;
+            currentZ = 0;
+
             // SINGLE PIERCE for entire profile
-            gcode.AppendLine($"M3 S{settings.LaserPower} ; SINGLE PIERCE for complete {profile.ProfileType}");
+            gcode.AppendLine($"M3 S{settings.LaserPower}");
             gcode.AppendLine($"G4 P{settings.PierceTime}");
 
             // Cut ALL edges với C-axis unroll consistency
@@ -459,7 +483,7 @@ namespace TubeLaserCAM.UI.Models
                     {
                         var point = points[i];
                         double normalizedTargetC = HandleCAxisForUnrollConsistency(currentC, point.C);
-                        
+
                         if (Math.Abs(point.Y - currentY) > 0.001 || Math.Abs(normalizedTargetC - currentC) > 0.001)
                         {
                             gcode.AppendLine($"G1 Y{point.Y:F3} C{normalizedTargetC:F3}");
@@ -475,7 +499,7 @@ namespace TubeLaserCAM.UI.Models
                     {
                         var point = points[i];
                         double normalizedTargetC = HandleCAxisForUnrollConsistency(currentC, point.C);
-                        
+
                         if (Math.Abs(point.Y - currentY) > 0.001 || Math.Abs(normalizedTargetC - currentC) > 0.001)
                         {
                             gcode.AppendLine($"G1 Y{point.Y:F3} C{normalizedTargetC:F3}");
@@ -488,13 +512,13 @@ namespace TubeLaserCAM.UI.Models
                 isFirstEdge = false;
             }
 
-            gcode.AppendLine($"M5 ; {profile.ProfileType} profile complete");
+            gcode.AppendLine($"M5");
             gcode.AppendLine($"G0 Z{settings.SafeZ}");
             gcode.AppendLine();
         }
 
         /// <summary>
-        /// Choose optimal start point for profile
+        /// Choose optimal start point for profile based on Y Direction preference
         /// </summary>
         private UnrolledPoint ChooseOptimalStartPointForProfile(CompleteProfile profile)
         {
@@ -504,26 +528,57 @@ namespace TubeLaserCAM.UI.Models
             var firstPoint = allPoints.First();
             var lastPoint = allPoints.Last();
 
-            // OPEN profile: PHẢI start từ điểm đầu tự nhiên
+            // OPEN profile: chọn endpoint phù hợp với Y Direction preference
             if (!profile.IsClosed)
             {
-                return firstPoint;
+                switch (settings.CuttingStrategy.YDirection)
+                {
+                    case CuttingDirectionSettings.YDirectionPreference.AlwaysPositive:
+                        // Start từ Y nhỏ nhất (bottom)
+                        var result = firstPoint.Y <= lastPoint.Y ? firstPoint : lastPoint;
+                        System.Diagnostics.Debug.WriteLine($"✅ Open Profile AlwaysPositive: Start Y={result.Y:F3}");
+                        return result;
+                        
+                    case CuttingDirectionSettings.YDirectionPreference.AlwaysNegative:
+                        // Start từ Y lớn nhất (top)
+                        var result2 = firstPoint.Y >= lastPoint.Y ? firstPoint : lastPoint;
+                        System.Diagnostics.Debug.WriteLine($"✅ Open Profile AlwaysNegative: Start Y={result2.Y:F3}");
+                        return result2;
+                        
+                    default:
+                        return firstPoint;
+                }
             }
 
-            // CLOSED profile: chọn endpoint gần 0° hoặc 360° nhất
-            double firstDistanceTo0 = Math.Min(firstPoint.C, 360 - firstPoint.C);
-            double lastDistanceTo0 = Math.Min(lastPoint.C, 360 - lastPoint.C);
-
-            if (firstDistanceTo0 <= lastDistanceTo0)
+            // CLOSED profile: chọn start point theo Y Direction preference
+            UnrolledPoint optimalPoint = null;
+            
+            switch (settings.CuttingStrategy.YDirection)
             {
-                return firstPoint;
+                case CuttingDirectionSettings.YDirectionPreference.AlwaysPositive:
+                    // Start từ điểm có Y nhỏ nhất (bottom of cylinder)
+                    optimalPoint = allPoints.OrderBy(p => p.Y).First();
+                    System.Diagnostics.Debug.WriteLine($"✅ Closed Profile AlwaysPositive: Start Y={optimalPoint.Y:F3} (bottom)");
+                    break;
+                    
+                case CuttingDirectionSettings.YDirectionPreference.AlwaysNegative:
+                    // Start từ điểm có Y lớn nhất (top of cylinder)
+                    optimalPoint = allPoints.OrderByDescending(p => p.Y).First();
+                    System.Diagnostics.Debug.WriteLine($"✅ Closed Profile AlwaysNegative: Start Y={optimalPoint.Y:F3} (top)");
+                    break;
+                    
+                default:
+                    // Fallback: gần 0°/360° nhất
+                    double firstDistanceTo0 = Math.Min(firstPoint.C, 360 - firstPoint.C);
+                    double lastDistanceTo0 = Math.Min(lastPoint.C, 360 - lastPoint.C);
+                    optimalPoint = firstDistanceTo0 <= lastDistanceTo0 ? firstPoint : lastPoint;
+                    break;
             }
-            else
-            {
-                // Reorder profile để start từ last point
-                ReorderProfileToStartFromEnd(profile);
-                return profile.Edges[0].Points[0]; // New first point after reorder
-            }
+            
+            // Reorder profile để start từ optimal point nếu cần
+            ReorderProfileToStartFromPoint(profile, optimalPoint);
+            
+            return profile.Edges[0].Points[0]; // Return first point after reorder
         }
 
         /// <summary>
@@ -540,6 +595,60 @@ namespace TubeLaserCAM.UI.Models
             }
             
             profile.Edges = reversedEdges;
+        }
+
+        /// <summary>
+        /// Reorder profile to start from specific point
+        /// </summary>
+        private void ReorderProfileToStartFromPoint(CompleteProfile profile, UnrolledPoint targetPoint)
+        {
+            if (!profile.IsClosed || profile.Edges.Count == 0)
+                return;
+                
+            // Find edge and point index that contains target point
+            int targetEdgeIndex = -1;
+            int targetPointIndex = -1;
+            
+            for (int edgeIdx = 0; edgeIdx < profile.Edges.Count; edgeIdx++)
+            {
+                var edge = profile.Edges[edgeIdx];
+                for (int pointIdx = 0; pointIdx < edge.Points.Count; pointIdx++)
+                {
+                    var point = edge.Points[pointIdx];
+                    if (Math.Abs(point.Y - targetPoint.Y) < 0.1 && Math.Abs(point.C - targetPoint.C) < 1.0)
+                    {
+                        targetEdgeIndex = edgeIdx;
+                        targetPointIndex = pointIdx;
+                        break;
+                    }
+                }
+                if (targetEdgeIndex >= 0) break;
+            }
+            
+            if (targetEdgeIndex < 0)
+            {
+                System.Diagnostics.Debug.WriteLine($"⚠️ Target point Y={targetPoint.Y:F3}, C={targetPoint.C:F3} not found in profile");
+                return;
+            }
+            
+            System.Diagnostics.Debug.WriteLine($"🎯 Reordering profile to start from Edge#{targetEdgeIndex}, Point#{targetPointIndex}");
+            
+            // Split and reorder edges
+            var newEdges = new List<UnrolledToolpath>();
+            
+            // Add edges from target edge to end
+            for (int i = targetEdgeIndex; i < profile.Edges.Count; i++)
+            {
+                newEdges.Add(profile.Edges[i]);
+            }
+            
+            // Add edges from start to target edge
+            for (int i = 0; i < targetEdgeIndex; i++)
+            {
+                newEdges.Add(profile.Edges[i]);
+            }
+            
+            profile.Edges = newEdges;
         }
 
         /// <summary>
@@ -678,8 +787,6 @@ namespace TubeLaserCAM.UI.Models
 
         private void ProcessCompleteCircleFixed(UnrolledToolpath toolpath)
         {
-            gcode.AppendLine($"; Complete Circle #{toolpath.EdgeId} [FIXED]");
-
             var points = toolpath.Points;
             var firstPoint = points[0];
             
@@ -704,30 +811,97 @@ namespace TubeLaserCAM.UI.Models
 
         protected virtual void AddHeader(CylinderData cylinderInfo)
         {
-            gcode.AppendLine($"; {settings.FileHeader}");
-            gcode.AppendLine($"; Generated: {DateTime.Now}");
-            gcode.AppendLine($"; Cylinder: R={cylinderInfo.Radius:F2}mm, L={cylinderInfo.Length:F2}mm");
-            gcode.AppendLine($"; Program: {settings.ProgramName}");
-            gcode.AppendLine("; *** ENHANCED VERSION - UNROLL CONSISTENCY + PROFILE GROUPING ***");
+            gcode.AppendLine($"{settings.FileHeader} by T2N Industries");
+            gcode.AppendLine($"(Generated: {DateTime.Now})");
+            gcode.AppendLine($"(Cylinder: R={cylinderInfo.Radius:F2}mm, L={cylinderInfo.Length:F2}mm)");
+            gcode.AppendLine($"( Program: {settings.ProgramName})");
             gcode.AppendLine();
         }
 
         protected virtual void AddInitialization()
         {
-            gcode.AppendLine("G21 ; Metric units");
-            gcode.AppendLine("G90 ; Absolute positioning");
-            gcode.AppendLine($"F{settings.FeedRate} ; Set feed rate");
-            gcode.AppendLine("M3 S0 ; Laser off");
-            gcode.AppendLine($"G0 Z{settings.SafeZ} ; Safe height");
+            gcode.AppendLine("G21");
+            gcode.AppendLine("G90");
+            gcode.AppendLine($"F{settings.FeedRate}");
+            gcode.AppendLine("M3 S0");
+            gcode.AppendLine($"G0 Z{settings.SafeZ}");
             gcode.AppendLine();
         }
 
         protected virtual void AddFooter()
         {
-            gcode.AppendLine("; Program end");
-            gcode.AppendLine("M5 ; Ensure laser off");
-            gcode.AppendLine("G0 Z50 ; Final retract");
-            gcode.AppendLine("M30 ; Program end");
+            gcode.AppendLine("M5");
+            gcode.AppendLine("G0 Z50");
+            gcode.AppendLine("M30");
+        }
+
+        /// <summary>
+        /// Transform unroll coordinates to machine coordinates
+        /// Machine coordinate system: Y=0 is start position, all cutting moves go to Y negative
+        /// </summary>
+        private List<CompleteProfile> TransformUnrollToMachineCoordinates(List<CompleteProfile> profiles)
+        {
+            System.Diagnostics.Debug.WriteLine("🔧 COORDINATE TRANSFORMATION: Unroll → Machine");
+            
+            // Step 1: Find Y bounds of all unrolled geometry
+            double yMax = double.MinValue;
+            double yMin = double.MaxValue;
+            
+            foreach (var profile in profiles)
+            {
+                foreach (var edge in profile.Edges)
+                {
+                    foreach (var point in edge.Points)
+                    {
+                        yMax = Math.Max(yMax, point.Y);
+                        yMin = Math.Min(yMin, point.Y);
+                    }
+                }
+            }
+            
+            System.Diagnostics.Debug.WriteLine($"Unroll Y bounds: [{yMin:F2}, {yMax:F2}]mm");
+            
+            // Step 2: Calculate offset to map Y_max → Y=0 (machine start position)
+            double yOffset = yMax;
+            System.Diagnostics.Debug.WriteLine($"Y offset applied: {yOffset:F2}mm (Y_max becomes Y=0)");
+            
+            // Step 3: Transform all points
+            foreach (var profile in profiles)
+            {
+                foreach (var edge in profile.Edges)
+                {
+                    for (int i = 0; i < edge.Points.Count; i++)
+                    {
+                        var point = edge.Points[i];
+                        point.Y = point.Y - yOffset;  // Transform: Y_machine = Y_unroll - Y_max
+                        edge.Points[i] = point;
+                    }
+                }
+                
+                // Update profile bounds
+                profile.MinY = profile.MinY - yOffset;
+                profile.MaxY = profile.MaxY - yOffset;
+            }
+            
+            // Step 4: Verify transformation
+            double newYMax = double.MinValue;
+            double newYMin = double.MaxValue;
+            
+            foreach (var profile in profiles)
+            {
+                newYMax = Math.Max(newYMax, profile.MaxY);
+                newYMin = Math.Min(newYMin, profile.MinY);
+            }
+            
+            System.Diagnostics.Debug.WriteLine($"✅ Machine Y bounds: [{newYMin:F2}, {newYMax:F2}]mm");
+            System.Diagnostics.Debug.WriteLine($"✅ Y=0 at machine start position, all cuts go to Y negative");
+            
+            if (newYMax > 0.1)
+            {
+                System.Diagnostics.Debug.WriteLine($"⚠️ WARNING: Some Y coordinates > 0 after transformation!");
+            }
+            
+            return profiles;
         }
 
         public class CompleteProfile

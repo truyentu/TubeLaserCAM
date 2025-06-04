@@ -1292,7 +1292,7 @@ namespace TubeLaserCAM.UI.Models
                     return CuttingDirection.YNegative;
 
 
-                    // Alternate based on cutting order
+
                     return (profile.CuttingOrder % 2 == 0) ?
                         CuttingDirection.YPositive :
                         CuttingDirection.YNegative;

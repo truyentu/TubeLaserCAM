@@ -10,6 +10,7 @@ using System.Windows.Media;
 using System.Windows.Media.Effects;
 using System.Windows.Shapes;
 using System.Windows.Threading;
+using TubeLaserCAM.UI.Views;
 
 namespace TubeLaserCAM.UI.Models
 {
@@ -38,6 +39,8 @@ namespace TubeLaserCAM.UI.Models
         public Color CurrentCuttingColor { get; set; } = Colors.Red;
         public Color RapidMoveColor { get; set; } = Colors.Yellow;
         public Color ToolColor { get; set; } = Colors.Orange;
+        public Unrolled2DView ParentView { get; set; }
+
 
         public EnhancedAnimationController(Canvas canvas, double radius, double length, double canvasScale)
         {
@@ -54,20 +57,24 @@ namespace TubeLaserCAM.UI.Models
         {
             System.Diagnostics.Debug.WriteLine($"🎬 Animating move #{moveIndex}: {from.Y:F2},{from.C:F1}° → {to.Y:F2},{to.C:F1}° ({to.Type})");
 
-            // Calculate canvas coordinates
+            // Apply transformation from parent view
+            double yOffset = 0;
+            if (ParentView != null && ParentView.HasGCodeTransformation)
+            {
+                yOffset = ParentView.YOffsetTransform;
+            }
+
             double x1 = 50 + (from.C / 360.0) * 2 * Math.PI * cylinderRadius * scale;
-            double y1 = 50 + (cylinderLength / 2 + from.Y) * scale;
+            double y1 = 50 + (cylinderLength / 2 + from.Y + yOffset) * scale;
             double x2 = 50 + (to.C / 360.0) * 2 * Math.PI * cylinderRadius * scale;
-            double y2 = 50 + (cylinderLength / 2 + to.Y) * scale;
+            double y2 = 50 + (cylinderLength / 2 + to.Y + yOffset) * scale;
 
             if (to.Type == GCodeParser.GCodeMove.MoveType.Cut)
             {
-                // CUTTING MOVE: Red glow → Blue permanent
                 AnimateCuttingMove(x1, y1, x2, y2, from, to, moveIndex);
             }
             else if (to.Type == GCodeParser.GCodeMove.MoveType.Rapid)
             {
-                // RAPID MOVE: Yellow dashed → fade out
                 AnimateRapidMove(x1, y1, x2, y2, from, to);
             }
         }
@@ -235,28 +242,32 @@ namespace TubeLaserCAM.UI.Models
                 drawingCanvas.Children.Remove(oldTool);
             }
 
-            // Create new tool indicator
+            // Apply transformation
+            double yOffset = 0;
+            if (ParentView != null && ParentView.HasGCodeTransformation)
+            {
+                yOffset = ParentView.YOffsetTransform;
+            }
+
             double x = 50 + (position.C / 360.0) * 2 * Math.PI * cylinderRadius * scale;
-            double y = 50 + (cylinderLength / 2 + position.Y) * scale;
+            double y = 50 + (cylinderLength / 2 + position.Y + yOffset) * scale;
 
             var toolGroup = new Canvas
             {
                 Tag = "tool_indicator"
             };
 
-            // Outer circle với laser status color
             var outerCircle = new Ellipse
             {
                 Width = 18,
                 Height = 18,
                 Stroke = Brushes.Black,
                 StrokeThickness = 2,
-                Fill = position.LaserOn ? 
-                       new SolidColorBrush(CurrentCuttingColor) : 
+                Fill = position.LaserOn ?
+                       new SolidColorBrush(CurrentCuttingColor) :
                        new SolidColorBrush(ToolColor)
             };
 
-            // Inner dot
             var innerDot = new Ellipse
             {
                 Width = 6,
@@ -273,7 +284,6 @@ namespace TubeLaserCAM.UI.Models
             Canvas.SetLeft(toolGroup, x - 9);
             Canvas.SetTop(toolGroup, y - 9);
 
-            // Enhanced tooltip
             var toolTip = $"🔧 TOOL POSITION\n" +
                          $"Y: {position.Y:F2}mm\n" +
                          $"C: {position.C:F1}°\n" +
