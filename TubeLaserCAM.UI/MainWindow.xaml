@@ -173,6 +173,19 @@
                         <Button Content="Clear Selection"
                                 Command="{Binding ClearSelectionCommand}"
                                 Margin="5,10,5,5" Padding="10,5"/>
+                        <TextBlock Text="Sim speed: " VerticalAlignment="Center" Margin="0,0,5,0"/>
+                        <Slider x:Name="SpeedSlider" 
+            Width="150" 
+            Minimum="0.1" 
+            Maximum="5.0" 
+            Value="{Binding SimulationSpeed, Mode=TwoWay}"
+            TickFrequency="0.5"
+            IsSnapToTickEnabled="False"
+            VerticalAlignment="Center"/>
+                        <TextBlock Text="{Binding SimulationSpeedText}" 
+               VerticalAlignment="Center" 
+               Margin="5,0,0,0"
+               MinWidth="30"/>
                     </StackPanel>
 
                     <!-- Edge Filters -->
@@ -368,25 +381,25 @@
     ZoomRectangleGesture="Shift+RightClick"
     ZoomSensitivity="1.0"
     RotationSensitivity="1.0">
-              
 
                 <!-- Mouse interaction -->
                 <i:Interaction.Triggers>
                     <i:EventTrigger EventName="MouseMove">
                         <i:InvokeCommandAction Command="{Binding MouseMoveCommand}"
-                                               PassEventArgsToCommand="True"/>
+                                   PassEventArgsToCommand="True"/>
                     </i:EventTrigger>
                     <i:EventTrigger EventName="MouseDown">
                         <i:InvokeCommandAction Command="{Binding MouseDownCommand}"
-                                               PassEventArgsToCommand="True"/>
+                                   PassEventArgsToCommand="True"/>
                     </i:EventTrigger>
                 </i:Interaction.Triggers>
 
+                <!-- Default Camera -->
                 <helix:HelixViewport3D.DefaultCamera>
                     <PerspectiveCamera Position="400,420,680"
-                                       LookDirection="-1,-1,-1"
-                                       UpDirection="0,0,1"
-                                       FieldOfView="40"/>
+                           LookDirection="-1,-1,-1"
+                           UpDirection="0,0,1"
+                           FieldOfView="40"/>
                 </helix:HelixViewport3D.DefaultCamera>
 
                 <!-- Lights -->
@@ -400,11 +413,8 @@
                     </ModelVisual3D.Content>
                 </ModelVisual3D>
 
-                <!-- Models -->
-                <ModelVisual3D Content="{Binding WireframeModel}"/>
-                <ModelVisual3D Content="{Binding AxisModel}"/>
-
-                <!-- Grid -->
+                <!-- Models will be added dynamically from code-behind -->
+                <!-- No need for staticModelsContainer or simulationModelsContainer here -->
 
             </helix:HelixViewport3D>
 

@@ -30,8 +30,8 @@ namespace GeometryKernel {
         // Discretization parameters
         double chordTolerance = 0.1;     // Max deviation from curve (mm)
         double angleTolerance = 5.0;     // Max angle between segments (degrees)
-        int minPointsPerCurve = 10;      // Minimum sampling points
-        int maxPointsPerCurve = 1000;    // Maximum sampling points
+        int minPointsPerCurve = 20;      // Minimum sampling points
+        int maxPointsPerCurve = 2000;    // Maximum sampling points
 
         // Angle handling
         bool unwrapAngles = true;        // true: allow C > 360°

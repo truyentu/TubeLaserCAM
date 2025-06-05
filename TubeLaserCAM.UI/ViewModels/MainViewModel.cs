@@ -22,6 +22,7 @@ using Point3D = System.Windows.Media.Media3D.Point3D;
 using Vector3D = System.Windows.Media.Media3D.Vector3D;
 using System.Threading.Tasks;
 using CommunityToolkit.Mvvm.Input;
+using TubeLaserCAM.UI.Helpers;
 
 namespace TubeLaserCAM.UI.ViewModels
 {
@@ -1692,5 +1693,44 @@ namespace TubeLaserCAM.UI.ViewModels
         {
             StatusText = "Filter cleared (not implemented yet)";
         }
+
+        public void TestAngleInterpolation()
+        {
+            System.Diagnostics.Debug.WriteLine("\n=== ANGLE INTERPOLATION TEST ===");
+
+            // Test cases
+            var testCases = new[]
+            {
+        new { from = 350.0, to = 10.0 },   // Qua 0
+        new { from = 10.0, to = 350.0 },   // Qua 360
+        new { from = 0.0, to = 270.0 },    // Quay âm lớn
+        new { from = 270.0, to = 0.0 },    // Quay dương lớn
+        new { from = 1.754, to = 358.246 } // Case từ G-code thực
+    };
+
+            foreach (var test in testCases)
+            {
+                double delta = AngleHelper.ShortestAngleDelta(test.from, test.to);
+                bool crossesSeam = AngleHelper.CrossesSeam(test.from, test.to);
+
+                System.Diagnostics.Debug.WriteLine(
+                    $"\nFrom {test.from:F3}° to {test.to:F3}°:");
+                System.Diagnostics.Debug.WriteLine(
+                    $"  Delta: {delta:F3}° ({(delta > 0 ? "CCW" : "CW")})");
+                System.Diagnostics.Debug.WriteLine(
+                    $"  Crosses seam: {crossesSeam}");
+
+                // Test interpolation at various points
+                for (double t = 0; t <= 1.0; t += 0.25)
+                {
+                    double interp = AngleHelper.InterpolateAngle(test.from, test.to, t);
+                    System.Diagnostics.Debug.WriteLine(
+                        $"  t={t:F2}: {interp:F3}°");
+                }
+            }
+
+            System.Diagnostics.Debug.WriteLine("=== END TEST ===\n");
+        }
+
     }
 }

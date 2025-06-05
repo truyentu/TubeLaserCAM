@@ -820,7 +820,6 @@ namespace TubeLaserCAM.UI.Models
 
         protected virtual void AddInitialization()
         {
-            gcode.AppendLine("G21");
             gcode.AppendLine("G90");
             gcode.AppendLine($"F{settings.FeedRate}");
             gcode.AppendLine("M3 S0");

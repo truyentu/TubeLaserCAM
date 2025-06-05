@@ -2,6 +2,9 @@
 using System.Collections.Generic;
 using System.Windows.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
+using TubeLaserCAM.UI.Helpers;
+using System.ComponentModel;
+using System.Runtime.CompilerServices;
 
 namespace TubeLaserCAM.Models
 {
@@ -14,8 +17,13 @@ namespace TubeLaserCAM.Models
         private TimeSpan _estimatedSegmentDuration;
         private TimeSpan _totalEstimatedSimulationTime;
         private double _tubeRadius = 25;
+        private int _tickCount = 0;
+        private double _lastDebuggedC = 0;
+        private DateTime _lastDebugTime = DateTime.MinValue;
         public List<GCodeCommand3D> Commands => _commands;
         public int CurrentCommandIndex => _currentCommandIndex;
+
+
 
         public AnimationController3D()
         {
@@ -50,7 +58,14 @@ namespace TubeLaserCAM.Models
         public double CurrentCRotation
         {
             get => _currentCRotation;
-            private set => SetProperty(ref _currentCRotation, value);
+            private set
+            {
+                if (Math.Abs(_currentCRotation - value) > 0.001)
+                {
+                    SetProperty(ref _currentCRotation, value);
+                    System.Diagnostics.Debug.WriteLine($"[ANIM] CurrentCRotation changed to: {value:F3}°");
+                }
+            }
         }
 
         private double _currentZPosition;
@@ -90,32 +105,6 @@ namespace TubeLaserCAM.Models
                 }
             }
             Reset();
-        }
-
-        private TimeSpan CalculateSingleSegmentDuration(GCodeCommand3D startCmd, GCodeCommand3D targetCmd)
-        {
-            double deltaY = targetCmd.Y - startCmd.Y;
-            double deltaC_deg = targetCmd.C - startCmd.C;
-            double deltaZ = targetCmd.Z - startCmd.Z;
-
-            double feedRate = targetCmd.FeedRate;
-            if (feedRate <= 0 && !targetCmd.IsRapidMove) feedRate = 3000;
-            if (targetCmd.IsRapidMove) feedRate = Math.Max(feedRate, 10000);
-
-            double arcLengthC = Math.Abs(deltaC_deg * Math.PI / 180.0 * _tubeRadius);
-            double totalSurfaceDistance = Math.Sqrt(deltaY * deltaY + arcLengthC * arcLengthC + deltaZ * deltaZ);
-
-            if (feedRate > 0 && totalSurfaceDistance > 0.0001)
-            {
-                return TimeSpan.FromSeconds(totalSurfaceDistance / (feedRate / 60.0));
-            }
-
-            if (targetCmd.CommandType >= GCodeCommandType.M03 && targetCmd.CommandType <= GCodeCommandType.M05 || targetCmd.CommandType == GCodeCommandType.Other)
-            {
-                if (totalSurfaceDistance <= 0.0001)
-                    return TimeSpan.FromMilliseconds(50);
-            }
-            return TimeSpan.Zero;
         }
 
 
@@ -217,6 +206,7 @@ namespace TubeLaserCAM.Models
                 return;
             }
 
+            _tickCount++;
             _elapsedTimeInCurrentSegment += TimeSpan.FromMilliseconds(_timer.Interval.TotalMilliseconds * SpeedRatio);
 
             GCodeCommand3D targetCmd = _commands[_currentCommandIndex];
@@ -232,17 +222,86 @@ namespace TubeLaserCAM.Models
                 segmentProgress = 1.0;
             }
 
+            // Store old values for comparison
+            double oldY = CurrentYPosition;
+            double oldC = CurrentCRotation;
+            double oldZ = CurrentZPosition;
+            bool oldLaserOn = IsCurrentLaserOn;
+
+            // Update positions - properties will fire PropertyChanged if value changes
             CurrentYPosition = startCmd.Y + (targetCmd.Y - startCmd.Y) * segmentProgress;
-            CurrentCRotation = startCmd.C + (targetCmd.C - startCmd.C) * segmentProgress;
             CurrentZPosition = startCmd.Z + (targetCmd.Z - startCmd.Z) * segmentProgress;
+
+            // QUAN TRỌNG: Sử dụng angle interpolation với xử lý vùng giao
+            CurrentCRotation = AngleHelper.InterpolateAngle(startCmd.C, targetCmd.C, segmentProgress);
+
             IsCurrentLaserOn = targetCmd.IsLaserOn;
 
+            // GIẢM DEBUG: Chỉ log mỗi 100 ticks (thay vì 10) VÀ khi có thay đổi lớn
+            bool shouldLogDebug = false;
+
+            // Log định kỳ mỗi 100 ticks (khoảng 1.6 giây ở 60fps)
+            if (_tickCount % 100 == 0)
+            {
+                shouldLogDebug = true;
+            }
+            // Hoặc khi có thay đổi góc C lớn (> 10 độ)
+            else if (Math.Abs(CurrentCRotation - _lastDebuggedC) > 10.0)
+            {
+                shouldLogDebug = true;
+            }
+            // Hoặc khi thay đổi command index (segment mới)
+            else if (_currentCommandIndex != _lastLoggedIndex)
+            {
+                shouldLogDebug = true;
+            }
+
+            if (shouldLogDebug)
+            {
+                double deltaC = CurrentCRotation - _lastDebuggedC;
+                System.Diagnostics.Debug.WriteLine(
+                    $"[ANIM] Tick {_tickCount} | Cmd {_currentCommandIndex}: " +
+                    $"Y={CurrentYPosition:F3}, C={CurrentCRotation:F3}°, " +
+                    $"Progress={segmentProgress:P}"
+                );
+                _lastDebuggedC = CurrentCRotation;
+                _lastDebugTime = DateTime.Now;
+            }
+
+            // GIẢM DEBUG: Chỉ log seam crossing quan trọng
+            if (_currentCommandIndex != _lastLoggedIndex && AngleHelper.CrossesSeam(startCmd.C, targetCmd.C))
+            {
+                _lastLoggedIndex = _currentCommandIndex;
+                double delta = AngleHelper.ShortestAngleDelta(startCmd.C, targetCmd.C);
+
+                // Chỉ log nếu góc xoay > 90 độ (quan trọng)
+                if (Math.Abs(delta) > 90)
+                {
+                    System.Diagnostics.Debug.WriteLine(
+                        $"[SEAM CROSSING] Cmd {_currentCommandIndex}: " +
+                        $"C rotation {startCmd.C:F1}° → {targetCmd.C:F1}° " +
+                        $"Delta: {delta:F1}°"
+                    );
+                }
+            }
+
+            // Khi hoàn thành segment
             if (segmentProgress >= 1.0)
             {
+                // Force set to exact target values
                 CurrentYPosition = targetCmd.Y;
                 CurrentCRotation = targetCmd.C;
                 CurrentZPosition = targetCmd.Z;
                 IsCurrentLaserOn = targetCmd.IsLaserOn;
+
+                // GIẢM DEBUG: Chỉ log completion cho các milestone (mỗi 10 segments)
+                if (_currentCommandIndex % 10 == 0 || _currentCommandIndex == _commands.Count - 1)
+                {
+                    System.Diagnostics.Debug.WriteLine(
+                        $"[COMPLETE] Segment {_currentCommandIndex}/{_commands.Count} completed. " +
+                        $"Y={CurrentYPosition:F3}, C={CurrentCRotation:F3}"
+                    );
+                }
 
                 _currentCommandIndex++;
                 if (_currentCommandIndex < _commands.Count)
@@ -253,28 +312,116 @@ namespace TubeLaserCAM.Models
                 {
                     Pause();
                     SimulationProgress = 1.0;
-                    OnPropertyChanged(nameof(SimulationProgress));
+
+                    // Log khi hoàn thành toàn bộ simulation
+                    System.Diagnostics.Debug.WriteLine("[SIMULATION] Completed all segments");
                     return;
                 }
             }
 
+            // Update overall progress
+            UpdateSimulationProgress();
+        }
+
+
+
+
+        private int _lastLoggedIndex = -1; 
+        private TimeSpan CalculateSingleSegmentDuration(GCodeCommand3D startCmd, GCodeCommand3D targetCmd)
+        {
+            double deltaY = targetCmd.Y - startCmd.Y;
+            double deltaZ = targetCmd.Z - startCmd.Z;
+
+            // QUAN TRỌNG: Sử dụng shortest angle delta
+            double deltaC_deg = AngleHelper.ShortestAngleDelta(startCmd.C, targetCmd.C);
+
+            double feedRate = targetCmd.FeedRate;
+            if (feedRate <= 0 && !targetCmd.IsRapidMove) feedRate = 3000;
+            if (targetCmd.IsRapidMove) feedRate = Math.Max(feedRate, 10000);
+
+            // Tính arc length với absolute value của delta
+            double arcLengthC = Math.Abs(deltaC_deg * Math.PI / 180.0 * _tubeRadius);
+
+            // Tổng khoảng cách 3D
+            double totalSurfaceDistance = Math.Sqrt(
+                deltaY * deltaY +
+                arcLengthC * arcLengthC +
+                deltaZ * deltaZ
+            );
+
+            if (feedRate > 0 && totalSurfaceDistance > 0.0001)
+            {
+                double timeInSeconds = totalSurfaceDistance / (feedRate / 60.0);
+
+                // Debug log cho các move lớn hoặc vượt seam
+                if (AngleHelper.CrossesSeam(startCmd.C, targetCmd.C) || totalSurfaceDistance > 50)
+                {
+                    System.Diagnostics.Debug.WriteLine(
+                        $"Segment duration: Y:{deltaY:F2}mm, C:{deltaC_deg:F2}°, Z:{deltaZ:F2}mm " +
+                        $"→ Distance:{totalSurfaceDistance:F2}mm, Time:{timeInSeconds:F3}s"
+                    );
+                }
+
+                return TimeSpan.FromSeconds(timeInSeconds);
+            }
+
+            // M-codes và các lệnh khác
+            if (targetCmd.CommandType >= GCodeCommandType.M03 && targetCmd.CommandType <= GCodeCommandType.M05 ||
+                targetCmd.CommandType == GCodeCommandType.Other)
+            {
+                if (totalSurfaceDistance <= 0.0001)
+                    return TimeSpan.FromMilliseconds(50);
+            }
+
+            return TimeSpan.Zero;
+        }
+        private void UpdateSimulationProgress()
+        {
             if (_totalEstimatedSimulationTime.TotalSeconds > 0)
             {
                 TimeSpan currentOverallElapsedTime = TimeSpan.Zero;
                 GCodeCommand3D prevCmdForProgress = GetPreviousStateCommand(0);
+
                 for (int i = 0; i < _currentCommandIndex; i++)
                 {
                     currentOverallElapsedTime += CalculateSingleSegmentDuration(prevCmdForProgress, _commands[i]);
                     prevCmdForProgress = _commands[i];
                 }
+
                 currentOverallElapsedTime += _elapsedTimeInCurrentSegment;
                 SimulationProgress = Math.Min(1.0, currentOverallElapsedTime.TotalSeconds / _totalEstimatedSimulationTime.TotalSeconds);
             }
             else
             {
                 SimulationProgress = (_commands.Count > 0 && _currentCommandIndex >= _commands.Count) ? 1.0 : 0.0;
-                if (_commands.Count == 0) SimulationProgress = 0.0;
             }
         }
+        public void DebugCurrentState()
+        {
+            System.Diagnostics.Debug.WriteLine($"\n=== ANIMATION STATE DEBUG ===");
+            System.Diagnostics.Debug.WriteLine($"IsPlaying: {IsPlaying}");
+            System.Diagnostics.Debug.WriteLine($"Current Command Index: {_currentCommandIndex}/{_commands?.Count ?? 0}");
+            System.Diagnostics.Debug.WriteLine($"Current Position: Y={CurrentYPosition:F3}, C={CurrentCRotation:F3}, Z={CurrentZPosition:F3}");
+            System.Diagnostics.Debug.WriteLine($"Laser On: {IsCurrentLaserOn}");
+            System.Diagnostics.Debug.WriteLine($"Speed Ratio: {SpeedRatio}");
+            System.Diagnostics.Debug.WriteLine($"Simulation Progress: {SimulationProgress:P}");
+
+            if (_currentCommandIndex >= 0 && _currentCommandIndex < _commands?.Count)
+            {
+                var currentCmd = _commands[_currentCommandIndex];
+                var prevCmd = GetPreviousStateCommand(_currentCommandIndex);
+                System.Diagnostics.Debug.WriteLine($"\nCurrent Segment:");
+                System.Diagnostics.Debug.WriteLine($"  From: Y={prevCmd.Y:F3}, C={prevCmd.C:F3}");
+                System.Diagnostics.Debug.WriteLine($"  To: Y={currentCmd.Y:F3}, C={currentCmd.C:F3}");
+                System.Diagnostics.Debug.WriteLine($"  Duration: {_estimatedSegmentDuration.TotalSeconds:F3}s");
+                System.Diagnostics.Debug.WriteLine($"  Elapsed: {_elapsedTimeInCurrentSegment.TotalSeconds:F3}s");
+            }
+            System.Diagnostics.Debug.WriteLine("=== END DEBUG ===\n");
+        }
+
+
+
+
+
     }
 }

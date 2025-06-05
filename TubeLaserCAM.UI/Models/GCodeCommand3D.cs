@@ -13,7 +13,7 @@ namespace TubeLaserCAM.Models
         public bool IsRapidMove { get; set; }
         public string OriginalLine { get; set; }
         public GCodeCommandType CommandType { get; set; }
-
+        public double LaserPower { get; set; }
 
         public GCodeCommand3D(double y, double c, double z, double feedRate, bool isLaserOn, bool isRapidMove, GCodeCommandType commandType, string originalLine = "")
         {
@@ -26,6 +26,7 @@ namespace TubeLaserCAM.Models
             CommandType = commandType;
             OriginalLine = originalLine;
             TargetPosition = new Point3D(0, 0, 0);
+            LaserPower = 0;
         }
     }
 
@@ -35,10 +36,13 @@ namespace TubeLaserCAM.Models
         G01, // Linear interpolation
         G02, // Circular interpolation CW
         G03, // Circular interpolation CCW
+        G04, // Dwell
+        G90, // Absolute positioning
+        G91, // Relative positioning
+        M02, // Program end
         M03, // Spindle on (Laser on)
         M04, // Spindle on CCW (Laser on, alternative)
         M05, // Spindle off (Laser off)
-        M02, // Program end
         M30, // Program end and reset
         Other
     }

@@ -96,6 +96,7 @@
     <Compile Include="Converters\CountToVisibilityConverter.cs" />
     <Compile Include="Converters\EnumBooleanConverter.cs" />
     <Compile Include="Converters\FilterParametersConverter.cs" />
+    <Compile Include="Helpers\AngleHelper.cs" />
     <Compile Include="Models\AnimationController3D.cs" />
     <Compile Include="Models\EnhancedAnimationController.cs" />
     <Compile Include="Models\GCodeCommand3D.cs" />
