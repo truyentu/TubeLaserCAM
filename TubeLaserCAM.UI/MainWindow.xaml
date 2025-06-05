@@ -5,8 +5,16 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:helix="http://helix-toolkit.org/wpf"
         xmlns:i="http://schemas.microsoft.com/xaml/behaviors"
-        mc:Ignorable="d"
-        Title="Tube Laser CAM" Height="800" Width="1200">
+        xmlns:viewModels="clr-namespace:TubeLaserCAM.UI.ViewModels"
+        xmlns:converters="clr-namespace:TubeLaserCAM.UI.Converters"
+        mc:Ignorable="d" Title="Tube Laser CAM" Height="800" Width="1400">
+
+
+    <Window.Resources>
+        <ResourceDictionary>
+            <converters:BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter"/>
+        </ResourceDictionary>
+    </Window.Resources>
 
     <Grid>
         <Grid.RowDefinitions>
@@ -59,6 +67,30 @@
             <Button Content="Front (F)" Click="SetFrontView_Click" Padding="5,2"/>
             <Button Content="Top" Click="SetTopView_Click" Padding="5,2"/>
             <Button Content="Side" Click="SetSideView_Click" Padding="5,2"/>
+            <Separator/>
+            <Button Command="{Binding ToggleSimulation3DCommand}" Padding="10,5">
+                <TextBlock Text="3D Simulation Mode" VerticalAlignment="Center"/>
+            </Button>
+            <Button Command="{Binding LoadGCodeForSimCommand}" Padding="10,5"
+            Visibility="{Binding IsSimulation3DActive, Converter={StaticResource BooleanToVisibilityConverter}}">
+                <TextBlock Text="Load G-Code (Sim)" VerticalAlignment="Center"/>
+            </Button>
+            <Button Command="{Binding Sim3DViewModel.PlayCommand}" Padding="5" Margin="5,0,0,0"
+            Visibility="{Binding IsSimulation3DActive, Converter={StaticResource BooleanToVisibilityConverter}}">
+                <TextBlock Text="Play"/>
+            </Button>
+            <Button Command="{Binding Sim3DViewModel.PauseCommand}" Padding="5"
+            Visibility="{Binding IsSimulation3DActive, Converter={StaticResource BooleanToVisibilityConverter}}">
+                <TextBlock Text="Pause"/>
+            </Button>
+            <Button Command="{Binding Sim3DViewModel.StopCommand}" Padding="5"
+            Visibility="{Binding IsSimulation3DActive, Converter={StaticResource BooleanToVisibilityConverter}}">
+                <TextBlock Text="Stop"/>
+            </Button>
+            <Button Command="{Binding Sim3DViewModel.ResetCommand}" Padding="5"
+            Visibility="{Binding IsSimulation3DActive, Converter={StaticResource BooleanToVisibilityConverter}}">
+                <TextBlock Text="Reset"/>
+            </Button>
         </ToolBar>
 
         <!-- Main Content -->

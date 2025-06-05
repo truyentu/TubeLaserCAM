@@ -21,6 +21,7 @@ using TubeLaserCAM.UI.Views;
 using Point3D = System.Windows.Media.Media3D.Point3D;
 using Vector3D = System.Windows.Media.Media3D.Vector3D;
 using System.Threading.Tasks;
+using CommunityToolkit.Mvvm.Input;
 
 namespace TubeLaserCAM.UI.ViewModels
 {
@@ -74,12 +75,32 @@ namespace TubeLaserCAM.UI.ViewModels
         private GCodeSettings gcodeSettings = new GCodeSettings();
         private int? hoveredEdgeId;
         private DateTime lastHoverTime = DateTime.MinValue;
-        private int? lastHoveredEdgeId = null;
         private List<int> lastHoveredProfileEdges = new List<int>();
         private const double HOVER_DEBOUNCE_MS = 50;
         private List<int> hoveredProfileEdges = new List<int>();
         private bool isCameraLocked = false;
+
         private System.Threading.CancellationTokenSource hoverCancellationToken;
+        public Simulation3DViewModel Sim3DViewModel { get; private set; }
+        public string LastGeneratedGCodePath { get; private set; }
+        private bool _isSimulation3DActive; // Đây là backing field
+        
+        public bool IsSimulation3DActive
+{
+    get => _isSimulation3DActive;
+    set
+    {
+        if (_isSimulation3DActive != value)
+        {
+            _isSimulation3DActive = value;
+            OnPropertyChanged(nameof(IsSimulation3DActive));
+            OnPropertyChanged(nameof(StaticModelsVisibility));
+            OnPropertyChanged(nameof(SimulationModelsVisibility));
+        }
+    }
+}
+        public Visibility StaticModelsVisibility => IsSimulation3DActive ? Visibility.Collapsed : Visibility.Visible;
+        public Visibility SimulationModelsVisibility => IsSimulation3DActive ? Visibility.Visible : Visibility.Collapsed;
 
 
         private ObservableCollection<ToolpathSuggestion> suggestedToolpaths;
@@ -150,6 +171,8 @@ namespace TubeLaserCAM.UI.ViewModels
         public ICommand SetFrontViewCommand { get; }
         public ICommand SetTopViewCommand { get; }
         public ICommand SetSideViewCommand { get; }
+        public ICommand ToggleSimulation3DCommand { get; }
+        public ICommand LoadGCodeForSimCommand { get; }
 
 
 
@@ -181,7 +204,9 @@ namespace TubeLaserCAM.UI.ViewModels
             UnrollToolpathsCommand = new RelayCommand(ExecuteUnrollToolpaths);
             GenerateGCodeCommand = new RelayCommand(ExecuteGenerateGCode);
             ToggleCameraLockCommand = new RelayCommand(ExecuteToggleCameraLock);
-
+            Sim3DViewModel = new Simulation3DViewModel();
+            ToggleSimulation3DCommand = new RelayCommand(ExecuteToggleSimulation3D, CanExecuteToggleSimulation3D);
+            LoadGCodeForSimCommand = new RelayCommand(ExecuteLoadGCodeForSim, CanExecuteLoadGCodeForSim);
 
         }
 
@@ -288,6 +313,61 @@ namespace TubeLaserCAM.UI.ViewModels
                 }
             }
         }
+
+        private void ExecuteToggleSimulation3D(object parameter) // Phải có tham số object
+        {
+            IsSimulation3DActive = !IsSimulation3DActive;
+            if (IsSimulation3DActive)
+            {
+                // Tự động thử load G-code đã tạo trước đó nếu có
+                if (!string.IsNullOrEmpty(LastGeneratedGCodePath) && System.IO.File.Exists(LastGeneratedGCodePath) && cylinderInfo != null && cylinderInfo.IsValid)
+                {
+                    // Gọi một phương thức trong Sim3DViewModel để load trực tiếp từ path
+                    // (Bạn cần thêm phương thức này vào Sim3DViewModel nếu chưa có)
+                    Sim3DViewModel.LoadGCodeFromFilePathInternal(LastGeneratedGCodePath, cylinderInfo.Radius);
+                }
+                // Hoặc nếu không có file G-code nào được load tự động vào Sim3DViewModel
+                else if (string.IsNullOrEmpty(Sim3DViewModel.LoadedGCodeFilePath))
+                {
+                    MessageBox.Show("Please load a G-code file for 3D simulation using the 'Load G-Code (Sim)' button, or generate G-Code first.", "3D Simulation", MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+            }
+        }
+
+        private void ExecuteLoadGCodeForSim(object parameter) // Phải có tham số object
+        {
+            // Gọi phương thức LoadGCodeFile của Sim3DViewModel.
+            // Vì LoadGCodeCommand của Sim3DViewModel dùng CommunityToolkit.Mvvm.RelayCommand (không cần param),
+            // chúng ta gọi trực tiếp phương thức tương ứng của nó.
+            if (Sim3DViewModel.LoadGCodeCommand is CommunityToolkit.Mvvm.Input.RelayCommand cmd) // Kiểm tra kiểu
+            {
+                if (cmd.CanExecute(null)) // Gọi CanExecute của lệnh trong Sim3DViewModel
+                {
+                    cmd.Execute(null); // Gọi Execute của lệnh trong Sim3DViewModel
+                }
+            }
+            // Hoặc nếu bạn tạo một phương thức public LoadGCodeFile() trong Sim3DViewModel:
+            // Sim3DViewModel.LoadGCodeFile(); // Gọi trực tiếp phương thức nếu có
+        }
+
+        private bool CanExecuteLoadGCodeForSim(object parameter) // Phải có tham số object
+        {
+            // Lệnh này chỉ nên active khi đang ở chế độ mô phỏng 3D
+            // và lệnh LoadGCode của Sim3DViewModel có thể thực thi
+            if (Sim3DViewModel.LoadGCodeCommand is CommunityToolkit.Mvvm.Input.RelayCommand cmd)
+            {
+                return IsSimulation3DActive && cmd.CanExecute(null);
+            }
+            return IsSimulation3DActive; // Fallback
+        }
+
+        private bool CanExecuteToggleSimulation3D(object parameter) // Phải có tham số object
+        {
+            // Có thể luôn cho phép chuyển đổi, hoặc thêm điều kiện nếu cần
+            return true;
+        }
+
+
 
         private void ExecuteGenerateGCode(object parameter)
         {
