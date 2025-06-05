@@ -79,6 +79,8 @@ namespace TubeLaserCAM.UI.ViewModels
         private const double HOVER_DEBOUNCE_MS = 50;
         private List<int> hoveredProfileEdges = new List<int>();
         private bool isCameraLocked = false;
+        private System.Threading.CancellationTokenSource hoverCancellationToken;
+
 
         private ObservableCollection<ToolpathSuggestion> suggestedToolpaths;
         public ObservableCollection<ToolpathSuggestion> SuggestedToolpaths
@@ -500,60 +502,97 @@ namespace TubeLaserCAM.UI.ViewModels
             }
         }
 
-        private void ExecuteMouseMove(object parameter)
+        private async void ExecuteMouseMove(object parameter)
         {
             if (parameter is MouseEventArgs args && geometryModel != null && WireframeModel != null)
             {
                 var viewport = FindViewport3D(args.Source);
                 if (viewport == null) return;
 
-                // Improved debouncing
-                var currentTime = DateTime.Now;
-                if ((currentTime - lastHoverTime).TotalMilliseconds < HOVER_DEBOUNCE_MS)
-                    return;
+                // Cancel previous hover operation
+                hoverCancellationToken?.Cancel();
+                hoverCancellationToken = new System.Threading.CancellationTokenSource();
+                var token = hoverCancellationToken.Token;
 
-                lastHoverTime = currentTime;
-
-                var mousePos = args.GetPosition(viewport);
-                var hitResult = GetHitTestResult(viewport, mousePos);
-
-                if (hitResult != null)
+                try
                 {
-                    var nearestEdgeId = FindEdgeIdFromHitResult(hitResult);
+                    // Debounce với 50ms delay
+                    await Task.Delay(50, token);
 
-                    // THÊM: Quick check to avoid redundant operations
-                    if (nearestEdgeId == lastHoveredEdgeId)
-                        return; // Already hovering same edge
+                    if (token.IsCancellationRequested) return;
 
-                    if (nearestEdgeId.HasValue && hoveredEdgeId != nearestEdgeId)
+                    var mousePos = args.GetPosition(viewport);
+                    var hitResult = GetHitTestResult(viewport, mousePos);
+
+                    if (hitResult != null)
                     {
-                        // Clear previous hover
-                        ClearHoveredProfileQuick();
+                        var nearestEdgeId = FindEdgeIdFromHitResult(hitResult);
 
-                        hoveredEdgeId = nearestEdgeId;
-                        lastHoveredEdgeId = nearestEdgeId;
-
-                        // THÊM: Async hover để không block UI
-                        Task.Run(() =>
+                        if (nearestEdgeId.HasValue && nearestEdgeId != hoveredEdgeId)
                         {
-                            Application.Current.Dispatcher.BeginInvoke(new Action(() =>
+                            // Clear previous hover
+                            if (hoveredEdgeId.HasValue)
                             {
-                                SetHoverHighlight(nearestEdgeId.Value);
-                            }), System.Windows.Threading.DispatcherPriority.Background);
-                        });
+                                geometryModel.SetEdgeHovered(hoveredEdgeId.Value, false);
+                            }
+
+                            // Set new hover
+                            hoveredEdgeId = nearestEdgeId;
+                            geometryModel.SetEdgeHovered(nearestEdgeId.Value, true);
+
+                            // Update status
+                            var edgeInfo = geometryModel.GetEdgeInfo(nearestEdgeId.Value);
+                            if (edgeInfo != null)
+                            {
+                                StatusText = $"Hovering Edge #{nearestEdgeId.Value} - Type: {edgeInfo.EdgeInfo.Type}";
+                            }
+                        }
+                    }
+                    else
+                    {
+                        // Clear hover if not hitting anything
+                        if (hoveredEdgeId.HasValue)
+                        {
+                            geometryModel.SetEdgeHovered(hoveredEdgeId.Value, false);
+                            hoveredEdgeId = null;
+                            UpdateStatusText();
+                        }
                     }
                 }
-                else
+                catch (TaskCanceledException)
                 {
-                    if (hoveredEdgeId.HasValue)
-                    {
-                        ClearHoveredProfileQuick();
-                        hoveredEdgeId = null;
-                        lastHoveredEdgeId = null;
-                        UpdateStatusText();
-                    }
+                    // Normal cancellation, ignore
                 }
             }
+        }
+
+        private void UpdateHoverBatch(int edgeId)
+        {
+            // Clear previous hover in batch
+            if (hoveredEdgeId.HasValue)
+            {
+                geometryModel.SetEdgeHovered(hoveredEdgeId.Value, false);
+            }
+
+            // Set new hover
+            hoveredEdgeId = edgeId;
+            geometryModel.SetEdgeHovered(edgeId, true);
+
+            // Update status once
+            var edgeInfo = geometryModel.GetEdgeInfo(edgeId);
+            if (edgeInfo != null)
+            {
+                StatusText = $"Hovering Edge #{edgeId} - Type: {edgeInfo.EdgeInfo.Type}";
+            }
+        }
+
+        private void ClearHoverBatch()
+        {
+            if (hoveredEdgeId.HasValue)
+            {
+                geometryModel.SetEdgeHovered(hoveredEdgeId.Value, false);
+            }
+            UpdateStatusText();
         }
 
 
@@ -644,9 +683,11 @@ namespace TubeLaserCAM.UI.ViewModels
 
         private RayMeshGeometry3DHitTestResult GetHitTestResult(Viewport3D viewport, Point mousePos)
         {
-            var hitParams = new PointHitTestParameters(mousePos);
             RayMeshGeometry3DHitTestResult closestHit = null;
             double closestDistance = double.MaxValue;
+
+            var hitParams = new PointHitTestParameters(mousePos);
+
             VisualTreeHelper.HitTest(viewport, null,
                 result =>
                 {
@@ -661,6 +702,7 @@ namespace TubeLaserCAM.UI.ViewModels
                     return HitTestResultBehavior.Continue;
                 },
                 hitParams);
+
             return closestHit;
         }
 
@@ -668,10 +710,11 @@ namespace TubeLaserCAM.UI.ViewModels
         {
             if (hitResult?.ModelHit is GeometryModel3D hitModel)
             {
-                foreach (var kvp in geometryModel.GetAllEdgeInfos())
-                {
-                    if (ReferenceEquals(kvp.Value.Model3D, hitModel)) return kvp.Key;
-                }
+                // Use LINQ for faster lookup
+                var edge = geometryModel.GetAllEdgeInfos()
+                    .FirstOrDefault(kvp => ReferenceEquals(kvp.Value.Model3D, hitModel));
+
+                return edge.Key > 0 ? edge.Key : (int?)null;
             }
             return null;
         }

@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media.Media3D;
@@ -9,13 +10,15 @@ namespace TubeLaserCAM.UI
 {
     public partial class MainWindow : Window
     {
+        private MainViewModel viewModel;
         private Point lastMousePosition;
         private bool isRotating = false;
 
         public MainWindow()
         {
             InitializeComponent();
-            DataContext = new MainViewModel();
+            viewModel = new MainViewModel();
+            DataContext = viewModel;
 
             // Set default camera position
             SetFrontView();
@@ -67,33 +70,40 @@ namespace TubeLaserCAM.UI
 
         private void Viewport3D_PreviewMouseMove(object sender, MouseEventArgs e)
         {
-            var vm = DataContext as MainViewModel;
-            if (vm == null || !vm.IsCameraLocked) return;
+            // Run on background thread to avoid blocking UI
+            Task.Run(() =>
+            {
+                Application.Current.Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    if (viewModel?.MouseMoveCommand?.CanExecute(e) == true)
+                    {
+                        viewModel.MouseMoveCommand.Execute(e);
+                    }
+                }), System.Windows.Threading.DispatcherPriority.Background);
+            });
+        }
 
+        private void Viewport3D_PreviewMouseDown(object sender, MouseButtonEventArgs e)
+        {
             if (e.LeftButton == MouseButtonState.Pressed)
             {
-                var currentPos = e.GetPosition(viewport3D);
+                // Check for modifier keys
+                bool hasModifier = Keyboard.IsKeyDown(Key.LeftCtrl) ||
+                                  Keyboard.IsKeyDown(Key.RightCtrl) ||
+                                  Keyboard.IsKeyDown(Key.LeftShift) ||
+                                  Keyboard.IsKeyDown(Key.RightShift) ||
+                                  Keyboard.IsKeyDown(Key.LeftAlt) ||
+                                  Keyboard.IsKeyDown(Key.RightAlt);
 
-                if (!isRotating)
+                if (!hasModifier)
                 {
-                    lastMousePosition = currentPos;
-                    isRotating = true;
-                    return;
+                    // Handle edge selection
+                    if (viewModel?.MouseDownCommand?.CanExecute(e) == true)
+                    {
+                        viewModel.MouseDownCommand.Execute(e);
+                        e.Handled = true; // Prevent camera movement
+                    }
                 }
-
-                // Calculate rotation angle around Z axis (thay vì Y)
-                double deltaX = currentPos.X - lastMousePosition.X;
-                double rotationAngle = deltaX * 0.5; // Sensitivity
-
-                // Rotate camera around Z axis
-                RotateCameraAroundZAxis(rotationAngle); // ĐỔI TÊN FUNCTION
-
-                lastMousePosition = currentPos;
-                e.Handled = true; // Prevent default camera control
-            }
-            else
-            {
-                isRotating = false;
             }
         }
 

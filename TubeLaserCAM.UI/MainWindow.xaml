@@ -314,15 +314,28 @@
             <!-- Splitter -->
             <GridSplitter Grid.Column="1" HorizontalAlignment="Stretch" Background="Gray"/>
 
-            <!-- 3D Viewport -->
             <helix:HelixViewport3D Grid.Column="2"
-                       ShowCoordinateSystem="True"
-                       ShowViewCube="True"
-                       Background="LightGray"
-                       x:Name="viewport3D"
-                       RotateAroundMouseDownPoint="True"
-                       CameraRotationMode="Trackball"
-                       PreviewMouseMove="Viewport3D_PreviewMouseMove">
+    ShowCoordinateSystem="True"
+    ShowViewCube="True"
+    Background="LightGray"
+    x:Name="viewport3D"
+    RotateAroundMouseDownPoint="True"
+    CameraRotationMode="Trackball"
+    PreviewMouseMove="Viewport3D_PreviewMouseMove"
+    PreviewMouseDown="Viewport3D_PreviewMouseDown"
+    CalculateCursorPosition="False"
+    ShowTriangleCountInfo="False"
+    IsHitTestVisible="True"
+    RenderOptions.BitmapScalingMode="HighQuality"
+    RenderOptions.EdgeMode="Unspecified"
+    IsPanEnabled="True"
+    IsRotationEnabled="True"
+    IsZoomEnabled="True"
+    RotateGesture="RightClick"
+    PanGesture="MiddleClick"
+    ZoomRectangleGesture="Shift+RightClick"
+    ZoomSensitivity="1.0"
+    RotationSensitivity="1.0">
               
 
                 <!-- Mouse interaction -->
